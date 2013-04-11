@@ -1,0 +1,299 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <SchemaVersion>2.0</SchemaVersion>
+    <ProjectGuid>215ef717-9da7-4b79-bfb6-b27be6ae2f4a</ProjectGuid>
+    <ProjectHome>..\</ProjectHome>
+    <StartupFile>gyb.py</StartupFile>
+    <SearchPath>
+    </SearchPath>
+    <WorkingDirectory>.</WorkingDirectory>
+    <OutputPath>.</OutputPath>
+    <InterpreterId>9a7a9026-48c1-4688-9d5d-e5699d47d074</InterpreterId>
+    <InterpreterVersion>2.7</InterpreterVersion>
+    <Name>got-your-back</Name>
+    <RootNamespace>got-your-back</RootNamespace>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
+    <DebugSymbols>true</DebugSymbols>
+    <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)' == 'Release' ">
+    <DebugSymbols>true</DebugSymbols>
+    <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="gimaplib.py" />
+    <Compile Include="gyb-gui-setup.py" />
+    <Compile Include="gyb-gui.py" />
+    <Compile Include="gyb.py" />
+    <Compile Include="mimelib.py" />
+    <Compile Include="setup.py" />
+    <Compile Include="atom\auth.py" />
+    <Compile Include="atom\client.py" />
+    <Compile Include="atom\core.py" />
+    <Compile Include="atom\data.py" />
+    <Compile Include="atom\http.py" />
+    <Compile Include="atom\http_core.py" />
+    <Compile Include="atom\http_interface.py" />
+    <Compile Include="atom\mock_http.py" />
+    <Compile Include="atom\mock_http_core.py" />
+    <Compile Include="atom\mock_service.py" />
+    <Compile Include="atom\service.py" />
+    <Compile Include="atom\token_store.py" />
+    <Compile Include="atom\url.py" />
+    <Compile Include="atom\__init__.py" />
+    <Compile Include="gdata\apps_property.py" />
+    <Compile Include="gdata\auth.py" />
+    <Compile Include="gdata\client.py" />
+    <Compile Include="gdata\core.py" />
+    <Compile Include="gdata\data.py" />
+    <Compile Include="gdata\gauth.py" />
+    <Compile Include="gdata\sample_util.py" />
+    <Compile Include="gdata\service.py" />
+    <Compile Include="gdata\test_config.py" />
+    <Compile Include="gdata\test_data.py" />
+    <Compile Include="gdata\urlfetch.py" />
+    <Compile Include="gdata\__init__.py" />
+    <Compile Include="gdata\acl\data.py" />
+    <Compile Include="gdata\acl\__init__.py" />
+    <Compile Include="gdata\alt\appengine.py" />
+    <Compile Include="gdata\alt\app_engine.py" />
+    <Compile Include="gdata\alt\__init__.py" />
+    <Compile Include="gdata\analytics\client.py" />
+    <Compile Include="gdata\analytics\data.py" />
+    <Compile Include="gdata\analytics\service.py" />
+    <Compile Include="gdata\analytics\__init__.py" />
+    <Compile Include="gdata\apps\apps_property_entry.py" />
+    <Compile Include="gdata\apps\client.py" />
+    <Compile Include="gdata\apps\data.py" />
+    <Compile Include="gdata\apps\service.py" />
+    <Compile Include="gdata\apps\__init__.py" />
+    <Compile Include="gdata\apps\adminsettings\service.py" />
+    <Compile Include="gdata\apps\adminsettings\__init__.py" />
+    <Compile Include="gdata\apps\audit\service.py" />
+    <Compile Include="gdata\apps\audit\__init__.py" />
+    <Compile Include="gdata\apps\emailsettings\client.py" />
+    <Compile Include="gdata\apps\emailsettings\data.py" />
+    <Compile Include="gdata\apps\emailsettings\service.py" />
+    <Compile Include="gdata\apps\emailsettings\__init__.py" />
+    <Compile Include="gdata\apps\groups\client.py" />
+    <Compile Include="gdata\apps\groups\data.py" />
+    <Compile Include="gdata\apps\groups\service.py" />
+    <Compile Include="gdata\apps\groups\__init__.py" />
+    <Compile Include="gdata\apps\migration\service.py" />
+    <Compile Include="gdata\apps\migration\__init__.py" />
+    <Compile Include="gdata\apps\multidomain\client.py" />
+    <Compile Include="gdata\apps\multidomain\data.py" />
+    <Compile Include="gdata\apps\multidomain\__init__.py" />
+    <Compile Include="gdata\apps\organization\client.py" />
+    <Compile Include="gdata\apps\organization\data.py" />
+    <Compile Include="gdata\apps\organization\service.py" />
+    <Compile Include="gdata\apps\organization\__init__.py" />
+    <Compile Include="gdata\blogger\client.py" />
+    <Compile Include="gdata\blogger\data.py" />
+    <Compile Include="gdata\blogger\service.py" />
+    <Compile Include="gdata\blogger\__init__.py" />
+    <Compile Include="gdata\books\data.py" />
+    <Compile Include="gdata\books\service.py" />
+    <Compile Include="gdata\books\__init__.py" />
+    <Compile Include="gdata\calendar\client.py" />
+    <Compile Include="gdata\calendar\data.py" />
+    <Compile Include="gdata\calendar\service.py" />
+    <Compile Include="gdata\calendar\__init__.py" />
+    <Compile Include="gdata\calendar_resource\client.py" />
+    <Compile Include="gdata\calendar_resource\data.py" />
+    <Compile Include="gdata\calendar_resource\__init__.py" />
+    <Compile Include="gdata\codesearch\service.py" />
+    <Compile Include="gdata\codesearch\__init__.py" />
+    <Compile Include="gdata\contacts\client.py" />
+    <Compile Include="gdata\contacts\data.py" />
+    <Compile Include="gdata\contacts\service.py" />
+    <Compile Include="gdata\contacts\__init__.py" />
+    <Compile Include="gdata\contentforshopping\client.py" />
+    <Compile Include="gdata\contentforshopping\data.py" />
+    <Compile Include="gdata\contentforshopping\__init__.py" />
+    <Compile Include="gdata\Crypto\test.py" />
+    <Compile Include="gdata\Crypto\__init__.py" />
+    <Compile Include="gdata\Crypto\Cipher\__init__.py" />
+    <Compile Include="gdata\Crypto\Hash\HMAC.py" />
+    <Compile Include="gdata\Crypto\Hash\MD5.py" />
+    <Compile Include="gdata\Crypto\Hash\SHA.py" />
+    <Compile Include="gdata\Crypto\Hash\__init__.py" />
+    <Compile Include="gdata\Crypto\Protocol\AllOrNothing.py" />
+    <Compile Include="gdata\Crypto\Protocol\Chaffing.py" />
+    <Compile Include="gdata\Crypto\Protocol\__init__.py" />
+    <Compile Include="gdata\Crypto\PublicKey\DSA.py" />
+    <Compile Include="gdata\Crypto\PublicKey\ElGamal.py" />
+    <Compile Include="gdata\Crypto\PublicKey\pubkey.py" />
+    <Compile Include="gdata\Crypto\PublicKey\qNEW.py" />
+    <Compile Include="gdata\Crypto\PublicKey\RSA.py" />
+    <Compile Include="gdata\Crypto\PublicKey\__init__.py" />
+    <Compile Include="gdata\Crypto\Util\number.py" />
+    <Compile Include="gdata\Crypto\Util\randpool.py" />
+    <Compile Include="gdata\Crypto\Util\RFC1751.py" />
+    <Compile Include="gdata\Crypto\Util\test.py" />
+    <Compile Include="gdata\Crypto\Util\__init__.py" />
+    <Compile Include="gdata\docs\client.py" />
+    <Compile Include="gdata\docs\data.py" />
+    <Compile Include="gdata\docs\service.py" />
+    <Compile Include="gdata\docs\__init__.py" />
+    <Compile Include="gdata\dublincore\data.py" />
+    <Compile Include="gdata\dublincore\__init__.py" />
+    <Compile Include="gdata\exif\__init__.py" />
+    <Compile Include="gdata\finance\data.py" />
+    <Compile Include="gdata\finance\service.py" />
+    <Compile Include="gdata\finance\__init__.py" />
+    <Compile Include="gdata\geo\data.py" />
+    <Compile Include="gdata\geo\__init__.py" />
+    <Compile Include="gdata\health\service.py" />
+    <Compile Include="gdata\health\__init__.py" />
+    <Compile Include="gdata\marketplace\client.py" />
+    <Compile Include="gdata\marketplace\data.py" />
+    <Compile Include="gdata\marketplace\__init__.py" />
+    <Compile Include="gdata\media\data.py" />
+    <Compile Include="gdata\media\__init__.py" />
+    <Compile Include="gdata\notebook\data.py" />
+    <Compile Include="gdata\notebook\__init__.py" />
+    <Compile Include="gdata\oauth\rsa.py" />
+    <Compile Include="gdata\oauth\__init__.py" />
+    <Compile Include="gdata\opensearch\data.py" />
+    <Compile Include="gdata\opensearch\__init__.py" />
+    <Compile Include="gdata\photos\service.py" />
+    <Compile Include="gdata\photos\__init__.py" />
+    <Compile Include="gdata\projecthosting\client.py" />
+    <Compile Include="gdata\projecthosting\data.py" />
+    <Compile Include="gdata\projecthosting\__init__.py" />
+    <Compile Include="gdata\sites\client.py" />
+    <Compile Include="gdata\sites\data.py" />
+    <Compile Include="gdata\sites\__init__.py" />
+    <Compile Include="gdata\spreadsheet\service.py" />
+    <Compile Include="gdata\spreadsheet\text_db.py" />
+    <Compile Include="gdata\spreadsheet\__init__.py" />
+    <Compile Include="gdata\spreadsheets\client.py" />
+    <Compile Include="gdata\spreadsheets\data.py" />
+    <Compile Include="gdata\spreadsheets\__init__.py" />
+    <Compile Include="gdata\tlslite\api.py" />
+    <Compile Include="gdata\tlslite\BaseDB.py" />
+    <Compile Include="gdata\tlslite\Checker.py" />
+    <Compile Include="gdata\tlslite\constants.py" />
+    <Compile Include="gdata\tlslite\errors.py" />
+    <Compile Include="gdata\tlslite\FileObject.py" />
+    <Compile Include="gdata\tlslite\HandshakeSettings.py" />
+    <Compile Include="gdata\tlslite\mathtls.py" />
+    <Compile Include="gdata\tlslite\messages.py" />
+    <Compile Include="gdata\tlslite\Session.py" />
+    <Compile Include="gdata\tlslite\SessionCache.py" />
+    <Compile Include="gdata\tlslite\SharedKeyDB.py" />
+    <Compile Include="gdata\tlslite\TLSConnection.py" />
+    <Compile Include="gdata\tlslite\TLSRecordLayer.py" />
+    <Compile Include="gdata\tlslite\VerifierDB.py" />
+    <Compile Include="gdata\tlslite\X509.py" />
+    <Compile Include="gdata\tlslite\X509CertChain.py" />
+    <Compile Include="gdata\tlslite\__init__.py" />
+    <Compile Include="gdata\tlslite\integration\AsyncStateMachine.py" />
+    <Compile Include="gdata\tlslite\integration\ClientHelper.py" />
+    <Compile Include="gdata\tlslite\integration\HTTPTLSConnection.py" />
+    <Compile Include="gdata\tlslite\integration\IMAP4_TLS.py" />
+    <Compile Include="gdata\tlslite\integration\IntegrationHelper.py" />
+    <Compile Include="gdata\tlslite\integration\POP3_TLS.py" />
+    <Compile Include="gdata\tlslite\integration\SMTP_TLS.py" />
+    <Compile Include="gdata\tlslite\integration\TLSAsyncDispatcherMixIn.py" />
+    <Compile Include="gdata\tlslite\integration\TLSSocketServerMixIn.py" />
+    <Compile Include="gdata\tlslite\integration\TLSTwistedProtocolWrapper.py" />
+    <Compile Include="gdata\tlslite\integration\XMLRPCTransport.py" />
+    <Compile Include="gdata\tlslite\integration\__init__.py" />
+    <Compile Include="gdata\tlslite\utils\AES.py" />
+    <Compile Include="gdata\tlslite\utils\ASN1Parser.py" />
+    <Compile Include="gdata\tlslite\utils\cipherfactory.py" />
+    <Compile Include="gdata\tlslite\utils\codec.py" />
+    <Compile Include="gdata\tlslite\utils\compat.py" />
+    <Compile Include="gdata\tlslite\utils\Cryptlib_AES.py" />
+    <Compile Include="gdata\tlslite\utils\Cryptlib_RC4.py" />
+    <Compile Include="gdata\tlslite\utils\Cryptlib_TripleDES.py" />
+    <Compile Include="gdata\tlslite\utils\cryptomath.py" />
+    <Compile Include="gdata\tlslite\utils\dateFuncs.py" />
+    <Compile Include="gdata\tlslite\utils\hmac.py" />
+    <Compile Include="gdata\tlslite\utils\jython_compat.py" />
+    <Compile Include="gdata\tlslite\utils\keyfactory.py" />
+    <Compile Include="gdata\tlslite\utils\OpenSSL_AES.py" />
+    <Compile Include="gdata\tlslite\utils\OpenSSL_RC4.py" />
+    <Compile Include="gdata\tlslite\utils\OpenSSL_RSAKey.py" />
+    <Compile Include="gdata\tlslite\utils\OpenSSL_TripleDES.py" />
+    <Compile Include="gdata\tlslite\utils\PyCrypto_AES.py" />
+    <Compile Include="gdata\tlslite\utils\PyCrypto_RC4.py" />
+    <Compile Include="gdata\tlslite\utils\PyCrypto_RSAKey.py" />
+    <Compile Include="gdata\tlslite\utils\PyCrypto_TripleDES.py" />
+    <Compile Include="gdata\tlslite\utils\Python_AES.py" />
+    <Compile Include="gdata\tlslite\utils\Python_RC4.py" />
+    <Compile Include="gdata\tlslite\utils\Python_RSAKey.py" />
+    <Compile Include="gdata\tlslite\utils\RC4.py" />
+    <Compile Include="gdata\tlslite\utils\rijndael.py" />
+    <Compile Include="gdata\tlslite\utils\RSAKey.py" />
+    <Compile Include="gdata\tlslite\utils\TripleDES.py" />
+    <Compile Include="gdata\tlslite\utils\xmltools.py" />
+    <Compile Include="gdata\tlslite\utils\__init__.py" />
+    <Compile Include="gdata\webmastertools\data.py" />
+    <Compile Include="gdata\webmastertools\service.py" />
+    <Compile Include="gdata\webmastertools\__init__.py" />
+    <Compile Include="gdata\youtube\client.py" />
+    <Compile Include="gdata\youtube\data.py" />
+    <Compile Include="gdata\youtube\service.py" />
+    <Compile Include="gdata\youtube\__init__.py" />
+    <Compile Include="ionicblue\fileutils.py" />
+    <Content Include="gdata\oauth\CHANGES.txt" />
+    <Content Include="gyb.ico" />
+  </ItemGroup>
+  <ItemGroup>
+    <Folder Include="atom" />
+    <Folder Include="gdata" />
+    <Folder Include="gdata\acl" />
+    <Folder Include="gdata\alt" />
+    <Folder Include="gdata\analytics" />
+    <Folder Include="gdata\apps" />
+    <Folder Include="gdata\apps\adminsettings" />
+    <Folder Include="gdata\apps\audit" />
+    <Folder Include="gdata\apps\emailsettings" />
+    <Folder Include="gdata\apps\groups" />
+    <Folder Include="gdata\apps\migration" />
+    <Folder Include="gdata\apps\multidomain" />
+    <Folder Include="gdata\apps\organization" />
+    <Folder Include="gdata\blogger" />
+    <Folder Include="gdata\books" />
+    <Folder Include="gdata\calendar" />
+    <Folder Include="gdata\calendar_resource" />
+    <Folder Include="gdata\codesearch" />
+    <Folder Include="gdata\contacts" />
+    <Folder Include="gdata\contentforshopping" />
+    <Folder Include="gdata\Crypto" />
+    <Folder Include="gdata\Crypto\Cipher" />
+    <Folder Include="gdata\Crypto\Hash" />
+    <Folder Include="gdata\Crypto\Protocol" />
+    <Folder Include="gdata\Crypto\PublicKey" />
+    <Folder Include="gdata\Crypto\Util" />
+    <Folder Include="gdata\docs" />
+    <Folder Include="gdata\dublincore" />
+    <Folder Include="gdata\exif" />
+    <Folder Include="gdata\finance" />
+    <Folder Include="gdata\geo" />
+    <Folder Include="gdata\health" />
+    <Folder Include="gdata\marketplace" />
+    <Folder Include="gdata\media" />
+    <Folder Include="gdata\notebook" />
+    <Folder Include="gdata\oauth" />
+    <Folder Include="gdata\opensearch" />
+    <Folder Include="gdata\photos" />
+    <Folder Include="gdata\projecthosting" />
+    <Folder Include="gdata\sites" />
+    <Folder Include="gdata\spreadsheet" />
+    <Folder Include="gdata\spreadsheets" />
+    <Folder Include="gdata\tlslite" />
+    <Folder Include="gdata\tlslite\integration" />
+    <Folder Include="gdata\tlslite\utils" />
+    <Folder Include="gdata\webmastertools" />
+    <Folder Include="gdata\youtube" />
+    <Folder Include="ionicblue" />
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.Common.targets" />
+</Project>

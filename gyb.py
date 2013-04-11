@@ -88,23 +88,23 @@ def SetupOptionParser():
     default='backup',
     help='Optional: Action to perform. backup, restore or estimate.')
   parser.add_option('--action-labels', help=SUPPRESS_HELP)
-  parser.add_option('--backup', 
-    action='callback', 
+  parser.add_option('--backup',
+    action='callback',
     callback=get_action_labels,
     help='Sets the ''backup'' action and takes an optional list of labels to backup.')
-  parser.add_option('--estimate', 
-    action='callback', 
+  parser.add_option('--estimate',
+    action='callback',
     callback=get_action_labels,
     help='Sets the ''estimate'' action and takes an optional list of labels to estimate.')
-  parser.add_option('--restore', 
-    action='callback', 
+  parser.add_option('--restore',
+    action='callback',
     callback=get_action_labels,
     help='Sets the ''restore'' action and takes an optional list of labels to restore.')
-  parser.add_option('--resume', 
-    action='store_true', 
+  parser.add_option('--resume',
+    action='store_true',
     default=False,
     help='With ''restore'', resume an interrupted restore.')
-  parser.add_option('--reindex', 
+  parser.add_option('--reindex',
     dest='action',
     action='store_const',
     const='reindex',
@@ -184,7 +184,7 @@ def requestOAuthAccess(email, debug=False):
   s = gdata.service.GDataService()
   s.debug = debug
   s.source = 'GotYourBack %s / %s / ' % (__version__,
-                   'Python %s.%s.%s %s' % (sys.version_info[0], 
+                   'Python %s.%s.%s %s' % (sys.version_info[0],
                    sys.version_info[1], sys.version_info[2], sys.version_info[3]))
   s.SetOAuthInputParameters(gdata.auth.OAuthSignatureMethod.HMAC_SHA1, consumer_key='anonymous', consumer_secret='anonymous')
   fetch_params = {'xoauth_displayname':'Got Your Back - Gmail Backup'}
@@ -241,7 +241,7 @@ def getMessagesToBackupList(imapconn, gmail_search='in:anywhere'):
     match = re.search('(.*?)\*(\d+)([dwmy])(.*)', search_in)
     if match:
       prefix, value, time_unit, search_in = match.groups()
-      days = int(value) 
+      days = int(value)
       if time_unit == 'd':
         pass
       elif time_unit == 'w':
@@ -277,16 +277,37 @@ def message_is_backed_up(message_num, sqlcur, sqlconn, backup_folder):
         return True
     return False
 
+def get_removed_message_nums(sqlcur, sqlconn, backup_folder):
+    try:
+      # messages deleted from GMail no longer appear in the uids table if the db is reindexed
+      sqlcur.execute('''
+          SELECT m.message_num, message_filename
+          FROM messages m LEFT NATURAL JOIN uids u
+          WHERE u.uid IS NULL''')
+    except sqlite3.OperationalError, e:
+      if e.message == 'no such table: messages':
+        print "\n\nError: your backup database file appears to be corrupted."
+      else:
+        print "SQL error:%s" % e
+      sys.exit(8)
+    message_nums = []
+    sqlresults = sqlcur.fetchall()
+    for x in sqlresults:
+      filename = x[1]
+      if os.path.isfile(os.path.join(backup_folder, filename)):
+        message_nums.append(x[0])
+    return message_nums
+
 def get_db_settings(sqlcur):
   try:
     sqlcur.execute('SELECT name, value FROM settings')
-    db_settings = dict(sqlcur) 
+    db_settings = dict(sqlcur)
     return db_settings
   except sqlite3.OperationalError, e:
     if e.message == 'no such table: settings':
       print "\n\nSorry, this version of GYB requires version %s of the database schema. Your backup folder database does not have a version." % (__db_schema_version__)
       sys.exit(6)
-    else: 
+    else:
       print "%s" % e
 
 def check_db_settings(db_settings, action, user_email_address):
@@ -309,9 +330,9 @@ def convertDB(sqlconn, uidvalidity, oldversion):
         # Convert to schema 3
         sqlconn.executescript('''
           BEGIN;
-          CREATE TABLE uids 
-              (message_num INTEGER, uid INTEGER PRIMARY KEY); 
-          INSERT INTO uids (uid, message_num) 
+          CREATE TABLE uids
+              (message_num INTEGER, uid INTEGER PRIMARY KEY);
+          INSERT INTO uids (uid, message_num)
                SELECT message_num as uid, message_num FROM messages;
           CREATE INDEX labelidx ON labels (message_num);
           CREATE INDEX flagidx ON flags (message_num);
@@ -330,8 +351,8 @@ def convertDB(sqlconn, uidvalidity, oldversion):
           CREATE UNIQUE INDEX flagidx ON flags (message_num, flag);
         ''')
       sqlconn.executemany('REPLACE INTO settings (name, value) VALUES (?,?)',
-                        (('uidvalidity',uidvalidity), 
-                         ('db_version', __db_schema_version__)) )   
+                        (('uidvalidity',uidvalidity),
+                         ('db_version', __db_schema_version__)) )
       sqlconn.commit()
       print "GYB database converted to version %s" % __db_schema_version__
   except sqlite3.OperationalError, e:
@@ -339,11 +360,11 @@ def convertDB(sqlconn, uidvalidity, oldversion):
       sys.exit(4)
 
 
-def getMessageIDs (sqlconn, backup_folder):   
+def getMessageIDs (sqlconn, backup_folder):
   sqlcur = sqlconn.cursor()
   header_parser = email.parser.HeaderParser()
   for message_num, filename in sqlconn.execute('''
-               SELECT message_num, message_filename FROM messages 
+               SELECT message_num, message_filename FROM messages
                       WHERE rfc822_msgid IS NULL'''):
     message_full_filename = os.path.join(backup_folder, filename)
     if os.path.isfile(message_full_filename):
@@ -354,7 +375,7 @@ def getMessageIDs (sqlconn, backup_folder):
           'UPDATE messages SET rfc822_msgid = ? WHERE message_num = ?',
                      (msgid, message_num))
   sqlconn.commit()
- 
+
 def rebuildUIDTable(imapconn, sqlconn):
   sqlcur = sqlconn.cursor()
   header_parser = email.parser.HeaderParser()
@@ -374,7 +395,7 @@ def rebuildUIDTable(imapconn, sqlconn):
       print "%s %s" % (t, d)
       sys.exit(5)
     for extras, header in (x for x in d if x != ')'):
-      uid, message_date = re.search('UID ([0-9]*) (INTERNALDATE \".*\")', 
+      uid, message_date = re.search('UID ([0-9]*) (INTERNALDATE \".*\")',
                                      extras).groups()
       time_seconds = time.mktime(imaplib.Internaldate2tuple(message_date))
       message_internaldate = datetime.datetime.fromtimestamp(time_seconds)
@@ -385,11 +406,11 @@ def rebuildUIDTable(imapconn, sqlconn):
       message_subject = m.get('subject')
       try:
         sqlcur.execute('''
-          INSERT INTO uids (uid, message_num) 
+          INSERT INTO uids (uid, message_num)
             SELECT ?, message_num FROM messages WHERE
                    rfc822_msgid = ? AND
                    message_internaldate = ?
-                   GROUP BY rfc822_msgid 
+                   GROUP BY rfc822_msgid
                    HAVING count(*) = 1''',
                    (uid,
                     msgid,
@@ -401,7 +422,7 @@ def rebuildUIDTable(imapconn, sqlconn):
       if sqlcur.lastrowid is None:
         print uid, msgid
     print "\b.",
-    sys.stdout.flush() 
+    sys.stdout.flush()
   # There is no need to maintain the Index for normal operations
   sqlcur.execute('DROP INDEX msgidx')
   sqlconn.commit()
@@ -428,11 +449,11 @@ def restart_line():
 
 def initializeDB(sqlcur, sqlconn, email, uidvalidity):
   sqlcur.executescript('''
-   CREATE TABLE messages(message_num INTEGER PRIMARY KEY, 
-                         message_filename TEXT, 
-                         message_to TEXT, 
-                         message_from TEXT, 
-                         message_subject TEXT, 
+   CREATE TABLE messages(message_num INTEGER PRIMARY KEY,
+                         message_filename TEXT,
+                         message_to TEXT,
+                         message_from TEXT,
+                         message_subject TEXT,
                          message_internaldate TIMESTAMP,
                          rfc822_msgid TEXT);
    CREATE TABLE labels (message_num INTEGER, label TEXT);
@@ -442,7 +463,7 @@ def initializeDB(sqlcur, sqlconn, email, uidvalidity):
    CREATE UNIQUE INDEX labelidx ON labels (message_num, label);
    CREATE UNIQUE INDEX flagidx ON flags (message_num, flag);
   ''')
-  sqlcur.executemany('INSERT INTO settings (name, value) VALUES (?, ?)', 
+  sqlcur.executemany('INSERT INTO settings (name, value) VALUES (?, ?)',
          (('email_address', email),
           ('db_version', __db_schema_version__),
           ('uidvalidity', uidvalidity)))
@@ -463,7 +484,14 @@ def get_message_size(imapconn, uids):
     message_size = int(re.search('^[0-9]* \(UID [0-9]* RFC822.SIZE ([0-9]*)\)$', x).group(1))
     total_size = total_size + message_size
   return total_size
-  
+
+def set_message_file_date(message_full_filename, message_time):
+  message_stat_details = os.stat(message_full_filename)
+  if message_stat_details.st_mtime != message_time:
+    os.utime(message_full_filename, (message_time, message_time))
+    print "last modified: %s" % time.ctime(message_stat_details.st_mtime)
+    print "updated to: %s" % time.ctime(os.stat(message_full_filename).st_mtime)
+
 def main(argv):
   options_parser = SetupOptionParser()
   (options, args) = options_parser.parse_args(argv)
@@ -520,7 +548,7 @@ def main(argv):
   sqldbfile = os.path.join(options.folder, 'msg-db.sqlite')
   # Do we need to initialize a new database?
   newDB = (not os.path.isfile(sqldbfile)) and (options.action == 'backup')
-  
+
   #If we're not doing a estimate or if the db file actually exists we open it (creates db if it doesn't exist)
   if options.action != 'estimate' or os.path.isfile(sqldbfile):
     print "\nUsing backup folder %s" % options.folder
@@ -534,13 +562,15 @@ def main(argv):
     db_settings = get_db_settings(sqlcur)
     check_db_settings(db_settings, options.action, options.email)
     if options.action != 'restore':
-      if ('uidvalidity' not in db_settings or 
+      if ('uidvalidity' not in db_settings or
           db_settings['db_version'] <  __db_schema_version__):
         convertDB(sqlconn, uidvalidity, db_settings['db_version'])
         db_settings = get_db_settings(sqlcur)
       if options.action == 'reindex':
         getMessageIDs(sqlconn, options.folder)
         rebuildUIDTable(imapconn, sqlconn)
+        # messages deleted from GMail no longer appear in the uids table
+        print get_removed_message_nums(sqlcur, sqlconn, options.folder)
         sqlconn.execute('''
             UPDATE settings SET value = ? where name = 'uidvalidity'
         ''', ((uidvalidity),))
@@ -568,6 +598,7 @@ def main(argv):
       os.mkdir(backup_path)
     messages_to_backup = []
     messages_to_refresh = []
+    messages_to_delete = []
     #Determine which messages from the search we haven't processed before.
     print "GYB needs to examine %s messages" % len(messages_to_process)
     for message_num in messages_to_process:
@@ -624,20 +655,23 @@ def main(argv):
         message_internal_datetime = datetime.datetime.fromtimestamp(time_seconds_since_epoch)
         message_flags = imaplib.ParseFlags(message_flags_string)
         message_file_name = "%s-%s.eml" % (uidvalidity, uid)
-        message_rel_path = os.path.join(str(message_date.tm_year), 
-                                        str(message_date.tm_mon), 
+        message_rel_path = os.path.join(str(message_date.tm_year),
+                                        str(message_date.tm_mon),
                                         str(message_date.tm_mday))
-        message_rel_filename = os.path.join(message_rel_path, 
+        message_rel_filename = os.path.join(message_rel_path,
                                             message_file_name)
-        message_full_path = os.path.join(options.folder, 
+        message_full_path = os.path.join(options.folder,
                                          message_rel_path)
-        message_full_filename = os.path.join(options.folder, 
+        message_full_filename = os.path.join(options.folder,
                                              message_rel_filename)
         if not os.path.isdir(message_full_path):
           os.makedirs(message_full_path)
         f = open(message_full_filename, 'wb')
         f.write(full_message)
         f.close()
+
+        set_message_file_date(message_full_filename, time_seconds_since_epoch)
+
         m = header_parser.parsestr(full_message, True)
         message_from = m.get('from')
         message_to = m.get('to')
@@ -645,29 +679,29 @@ def main(argv):
         message_id = m.get('message-id')
         sqlcur.execute("""
              INSERT INTO messages (
-                         message_filename, 
-                         message_to, 
-                         message_from, 
-                         message_subject, 
+                         message_filename,
+                         message_to,
+                         message_from,
+                         message_subject,
                          message_internaldate,
-                         rfc822_msgid) VALUES (?, ?, ?, ?, ?, ?)""", 
-                        (message_rel_filename, 
-                         message_to, 
-                         message_from, 
-                         message_subj, 
+                         rfc822_msgid) VALUES (?, ?, ?, ?, ?, ?)""",
+                        (message_rel_filename,
+                         message_to,
+                         message_from,
+                         message_subj,
                          message_internal_datetime,
                          message_id))
         message_num = sqlcur.lastrowid
         sqlcur.execute("""
-             REPLACE INTO uids (message_num, uid) VALUES (?, ?)""", 
+             REPLACE INTO uids (message_num, uid) VALUES (?, ?)""",
                                (message_num, uid))
         for label in labels:
           sqlcur.execute("""
-             INSERT INTO labels (message_num, label) VALUES (?, ?)""",  
+             INSERT INTO labels (message_num, label) VALUES (?, ?)""",
                                 (message_num, label))
         for flag in message_flags:
           sqlcur.execute("""
-             INSERT INTO flags (message_num, flag) VALUES (?, ?)""", 
+             INSERT INTO flags (message_num, flag) VALUES (?, ?)""",
                                (message_num, flag))
         backed_up_messages += 1
 
@@ -676,92 +710,97 @@ def main(argv):
       sys.stdout.write("backed up %s of %s messages" % (backed_up_messages, backup_count))
       sys.stdout.flush()
     print "\n"
- 
-    if not options.refresh:
-      messages_to_refresh = []
-    backed_up_messages = 0
-    backup_count = len(messages_to_refresh)
-    print "GYB needs to refresh %s messages" % backup_count
-    sqlcur.executescript("""
-       CREATE TEMP TABLE current_labels (label TEXT);
-       CREATE TEMP TABLE current_flags (flag TEXT);
-    """)
-    messages_at_once *= 100
-    for working_messages in batch(messages_to_refresh, messages_at_once):
-      #Save message content
-      batch_string = ','.join(working_messages)
-      bad_count = 0
-      while True:
-        try:
-          r, d = imapconn.uid('FETCH', batch_string, '(X-GM-LABELS FLAGS)')
-          if r != 'OK':
-            bad_count = bad_count + 1
-            if bad_count > 7:
-              print "\nError: failed to retrieve messages."
-              print "%s %s" % (r, d)
-              sys.exit(5)
-            sleep_time = math.pow(2, bad_count)
-            sys.stdout.write("\nServer responded with %s %s, will retry in %s seconds" % (r, d, str(sleep_time)))
-            time.sleep(sleep_time) # sleep 2 seconds, then 4, 8, 16, 32, 64, 128
+
+    if options.refresh:
+      backed_up_messages = 0
+      backup_count = len(messages_to_refresh)
+      print "GYB needs to refresh %s messages" % backup_count
+      sqlcur.executescript("""
+         CREATE TEMP TABLE current_labels (label TEXT);
+         CREATE TEMP TABLE current_flags (flag TEXT);
+      """)
+
+      messages_at_once *= 100
+      for working_messages in batch(messages_to_refresh, messages_at_once):
+        found_uids = set()
+        #Save message content
+        batch_string = ','.join(working_messages)
+        bad_count = 0
+        while True:
+          try:
+            r, d = imapconn.uid('FETCH', batch_string, '(X-GM-LABELS FLAGS)')
+            if r != 'OK':
+              bad_count = bad_count + 1
+              if bad_count > 7:
+                print "\nError: failed to retrieve messages."
+                print "%s %s" % (r, d)
+                sys.exit(5)
+              sleep_time = math.pow(2, bad_count)
+              sys.stdout.write("\nServer responded with %s %s, will retry in %s seconds" % (r, d, str(sleep_time)))
+              time.sleep(sleep_time) # sleep 2 seconds, then 4, 8, 16, 32, 64, 128
+              imapconn = gimaplib.ImapConnect(generateXOAuthString(key, secret, options.email, options.two_legged), options.debug, options.compress)
+              imapconn.select(ALL_MAIL, readonly=True)
+              continue
+            break
+          except imaplib.IMAP4.abort, e:
+            print 'imaplib.abort error:%s, retrying...' % e
             imapconn = gimaplib.ImapConnect(generateXOAuthString(key, secret, options.email, options.two_legged), options.debug, options.compress)
             imapconn.select(ALL_MAIL, readonly=True)
-            continue
-          break
-        except imaplib.IMAP4.abort, e:
-          print 'imaplib.abort error:%s, retrying...' % e
-          imapconn = gimaplib.ImapConnect(generateXOAuthString(key, secret, options.email, options.two_legged), options.debug, options.compress)
-          imapconn.select(ALL_MAIL, readonly=True)
-        except socket.error, e:
-          print 'socket.error:%s, retrying...' % e
-          imapconn = gimaplib.ImapConnect(generateXOAuthString(key, secret, options.email, options.two_legged), options.debug, options.compress)
-          imapconn.select(ALL_MAIL, readonly=True)
-      for results in d:
-        search_results = re.search('X-GM-LABELS \((.*)\) UID ([0-9]*) (FLAGS \(.*\))', results)
-        labels = shlex.split(search_results.group(1))
-        uid = search_results.group(2)
-        message_flags_string = search_results.group(3)
-        message_flags = imaplib.ParseFlags(message_flags_string)
-        sqlcur.execute('DELETE FROM current_labels')
-        sqlcur.execute('DELETE FROM current_flags')
-        sqlcur.executemany(
-           'INSERT INTO current_labels (label) VALUES (?)',
-              ((label,) for label in labels))
-        sqlcur.executemany(
-           'INSERT INTO current_flags (flag) VALUES (?)',
-              ((flag,) for flag in message_flags))
-        sqlcur.execute("""DELETE FROM labels where message_num = 
-                   (SELECT message_num from uids where uid = ?)
-                    AND label NOT IN current_labels""", ((uid),))
-        sqlcur.execute("""DELETE FROM flags where message_num = 
-                   (SELECT message_num from uids where uid = ?)
-                    AND flag NOT IN current_flags""", ((uid),))
-        sqlcur.execute("""INSERT INTO labels (message_num, label) 
-            SELECT message_num, label from uids, current_labels 
-               WHERE uid = ? AND label NOT IN 
-               (SELECT label FROM labels 
-                  WHERE message_num = uids.message_num)""", ((uid),))
-        sqlcur.execute("""INSERT INTO flags (message_num, flag) 
-            SELECT message_num, flag from uids, current_flags 
-               WHERE uid = ? AND flag NOT IN 
-               (SELECT flag FROM flags 
-                  WHERE message_num = uids.message_num)""", ((uid),))
-        backed_up_messages += 1
+          except socket.error, e:
+            print 'socket.error:%s, retrying...' % e
+            imapconn = gimaplib.ImapConnect(generateXOAuthString(key, secret, options.email, options.two_legged), options.debug, options.compress)
+            imapconn.select(ALL_MAIL, readonly=True)
+        for results in d:
+          search_results = re.search('X-GM-LABELS \((.*)\) UID ([0-9]*) (FLAGS \(.*\))', results)
+          labels = shlex.split(search_results.group(1))
+          uid = search_results.group(2)
+          found_uids.append(uid)
+          message_flags_string = search_results.group(3)
+          message_flags = imaplib.ParseFlags(message_flags_string)
+          sqlcur.execute('DELETE FROM current_labels')
+          sqlcur.execute('DELETE FROM current_flags')
+          sqlcur.executemany(
+             'INSERT INTO current_labels (label) VALUES (?)',
+                ((label,) for label in labels))
+          sqlcur.executemany(
+             'INSERT INTO current_flags (flag) VALUES (?)',
+                ((flag,) for flag in message_flags))
+          sqlcur.execute("""DELETE FROM labels where message_num =
+                     (SELECT message_num from uids where uid = ?)
+                      AND label NOT IN current_labels""", ((uid),))
+          sqlcur.execute("""DELETE FROM flags where message_num =
+                     (SELECT message_num from uids where uid = ?)
+                      AND flag NOT IN current_flags""", ((uid),))
+          sqlcur.execute("""INSERT INTO labels (message_num, label)
+              SELECT message_num, label from uids, current_labels
+                 WHERE uid = ? AND label NOT IN
+                 (SELECT label FROM labels
+                    WHERE message_num = uids.message_num)""", ((uid),))
+          sqlcur.execute("""INSERT INTO flags (message_num, flag)
+              SELECT message_num, flag from uids, current_flags
+                 WHERE uid = ? AND flag NOT IN
+                 (SELECT flag FROM flags
+                    WHERE message_num = uids.message_num)""", ((uid),))
+          backed_up_messages += 1
+        print list(working_messages)
+        print found_uids
+        print list(set(working_messages) - set(found_uids))
 
-      sqlconn.commit()
-      restart_line()
-      sys.stdout.write("refreshed %s of %s messages" % (backed_up_messages, backup_count))
-      sys.stdout.flush()
+        sqlconn.commit()
+        restart_line()
+        sys.stdout.write("refreshed %s of %s messages" % (backed_up_messages, backup_count))
+        sys.stdout.flush()
     print "\n"
- 
+
   # RESTORE #
   elif options.action == 'restore':
     imapconn.select(ALL_MAIL)  # read/write!
-    resumedb = os.path.join(options.folder, 
+    resumedb = os.path.join(options.folder,
                             "%s-restored.sqlite" % options.email)
     sqlcur.execute('ATTACH ? as resume', (resumedb,))
     sqlcur.executescript('''
-       CREATE TABLE IF NOT EXISTS resume.restored_messages 
-                      (message_num INTEGER PRIMARY KEY); 
+       CREATE TABLE IF NOT EXISTS resume.restored_messages
+                      (message_num INTEGER PRIMARY KEY);
        CREATE TEMP TABLE skip_messages (message_num INTEGER PRIMARY KEY);
     ''')
     if options.resume:
@@ -789,7 +828,7 @@ def main(argv):
                          ((label),))
       sqlcur.execute('''
         SELECT message_num, message_internaldate, message_filename FROM messages
-          WHERE message_num IN 
+          WHERE message_num IN
           (SELECT DISTINCT message_num from restore_labels NATURAL JOIN labels)
           AND message_num NOT IN skip_messages
       ''')
@@ -865,7 +904,7 @@ def main(argv):
       sqlconn.commit()
     sqlconn.execute('DETACH resume')
     sqlconn.commit()
-  
+
   # ESTIMATE #
   elif options.action == 'estimate':
     imapconn.select(ALL_MAIL, readonly=True)
@@ -914,7 +953,7 @@ def main(argv):
   if options.compress > 1:
     imapconn.display_stats()
   imapconn.logout()
-  
+
 if __name__ == '__main__':
   try:
     main(sys.argv)
