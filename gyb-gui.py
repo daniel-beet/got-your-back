@@ -46,8 +46,8 @@ def execute_gyb():
   command_list = [sys.argv[0]]
   gmail_search_argument = ' '
   if gmail_search.get() != '' and gmail_search.get() != None:
-    gmail_search_argument = ' -s "%s"' % gmail_search.get().replace('"','\\"')
-    command_list.append('-s')
+    gmail_search_argument = ' --search "%s"' % gmail_search.get().replace('"','\\"')
+    command_list.append('--search')
     command_list.append("%s" % gmail_search.get() )
 
   debug_argument = ' '
@@ -61,7 +61,7 @@ def execute_gyb():
   command_list.append('--email')
   command_list.append(email.get())
 
-  gyb_command = str('cmd /k gyb.exe -a %s -e %s%s%s' % (action.get(), email.get(), gmail_search_argument, debug_argument))
+  gyb_command = str('cmd /k gyb.exe --action %s --email %s%s%s' % (action.get(), email.get(), gmail_search_argument, debug_argument))
   print gyb_command
   #os.system(gyb_command)
   gyb.main(command_list)

@@ -4,91 +4,8 @@ import imaplib
 import re
 import shlex
 import sys
-import cStringIO
-import zlib
 
 import gyb
-
-maxRead = 1000000
-class MySSL (imaplib.IMAP4_SSL):
-
-  def __init__(self, host=None, port=imaplib.IMAP4_SSL_PORT):
-      self.compressor = None
-      self.decompressor = None
-      self.raw_in = 0
-      self.raw_out = 0
-      self.full_in = 0
-      self.full_out = 0
-      imaplib.IMAP4_SSL.__init__(self, host, port)
-
-  def start_compressing(self):
-      """start_compressing()
-      Enable deflate compression on the socket (RFC 4978)."""
-  
-      # rfc 1951 - pure DEFLATE, so use -15 for both windows
-      self.decompressor = zlib.decompressobj(-15)
-      self.compressor = zlib.compressobj(zlib.Z_DEFAULT_COMPRESSION, zlib.DEFLATED, -15)
-  
-  def read(self, size):
-      """Read 'size' bytes from remote."""
-      # sslobj.read() sometimes returns < size bytes
-      chunks = cStringIO.StringIO()
-      read = 0
-      while read < size:
-        data = self.read2(min(size-read, 16384))
-        read += len(data)
-        chunks.write(data)
-
-      chunks.seek(0)
-      return chunks.read()
-
-  def read2(self, size):
-      """data = read(size)
-      Read at most 'size' bytes from remote."""
-      if self.decompressor is None:
-        data = self.sslobj.read(size)
-        self.raw_in += len(data)
-        self.full_in += len(data)
-        return data
-  
-      if self.decompressor.unconsumed_tail:
-        data = self.decompressor.unconsumed_tail
-      else:
-        data = self.sslobj.read(8192)
-        self.raw_in += len(data)
-      data = self.decompressor.decompress(data, size)
-      self.full_in += len(data)
-      return data
-
-  def readline(self):
-      """Read line from remote."""
-      line = cStringIO.StringIO()
-      while 1:
-        char = self.read(1)
-        line.write(char)
-        if char in ("\n", ""): 
-          line.seek(0)
-          return line.read()
-  
-  def send(self, data):
-      """send(data)
-      Send 'data' to remote."""
-      self.full_out += len(data)
-      if self.compressor is not None:
-        data = self.compressor.compress(data)
-        data += self.compressor.flush(zlib.Z_SYNC_FLUSH)
-      self.raw_out += len(data)
-      self.sslobj.sendall(data)
-
-  def display_stats(self):
-      if self.compressor is not None:
-        print "raw_in   ", self.raw_in
-        print "full in  ", self.full_in
-        print "ratio = %d%%" % (100*(self.full_in-self.raw_in)/self.full_in)
-        print "raw_out  ", self.raw_out
-        print "full out ", self.full_out
-        print "ratio = %d%%" % (100*(self.full_out-self.raw_out)/self.full_out)
-        print "Compression efficiency: %d%%" % (100*(self.full_in+self.full_out-self.raw_in-self.raw_out)/(self.full_in+self.full_out))
 
 def GImapHasExtensions(imapconn):
   '''
@@ -126,22 +43,14 @@ def GImapSendID(imapconn, name, version, vendor, contact):
     raise GImapSendIDError('GImap Send ID failed to send ID: %s' % t)
   return shlex.split(d[0][1:-1])
 
-def ImapConnect(xoauth_string, debug, compress=False):
-  #imap_conn = imaplib.IMAP4_SSL('imap.gmail.com')
-  imap_conn = MySSL('imap.gmail.com')
+def ImapConnect(xoauth_string, debug):
+  imap_conn = imaplib.IMAP4_SSL('imap.gmail.com')
   if debug:
     imap_conn.debug = 4
-  imap_conn.authenticate('XOAUTH', lambda x: xoauth_string)
+  imap_conn.authenticate('XOAUTH2', lambda x: xoauth_string)
   if not GImapHasExtensions(imap_conn):
     print "This server does not support the Gmail IMAP Extensions."
     sys.exit(1)
-  if compress:
-    t, d = imap_conn.xatom("COMPRESS", "DEFLATE")
-    if t == 'OK':
-      imap_conn.start_compressing()
-    else:
-      print "Gmail refused compression: %s %s" % (t, d)
-
   GImapSendID(imap_conn, gyb.__program_name__, gyb.__version__, gyb.__author__, gyb.__email__)
   return imap_conn
 
