@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python-
 #
 # Got Your Back
 #
@@ -14,143 +14,113 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Got Your Back (GYB) is a command line tool which allows users to backup and restore their Gmail.
+"""\n%s\n\nGot Your Back (GYB) is a command line tool which allows users to backup and restore their Gmail.
 
 For more information, see http://code.google.com/p/got-your-back/
 """
 
-#global __name__, __author__, __email__, __version__, __license__
+global __name__, __author__, __email__, __version__, __license__
 __program_name__ = 'Got Your Back: Gmail Backup'
 __author__ = 'Jay Lee'
-__email__ = 'jay@jhltechservices.com'
-__version__ = '0.17 Alpha'
+__email__ = 'jay0lee@gmail.com'
+__version__ = '0.20 Alpha'
 __license__ = 'Apache License 2.0 (http://www.apache.org/licenses/LICENSE-2.0)'
 __db_schema_version__ = '5'
 __db_schema_min_version__ = '2'        #Minimum for restore
 
 import imaplib
 from optparse import OptionParser, SUPPRESS_HELP
-import webbrowser
 import sys
 import os
 import os.path
-import random
 import time
-import urllib
+import random
+import struct
+import platform
 import StringIO
 import socket
 import datetime
 import sqlite3
-import email.parser
+import email
+import mimetypes
 import re
 import shlex
-import urlparse
 from itertools import islice, chain
 import math
 
-import atom.http_core
-import gdata
-import gdata.gauth
-import gdata.service
-import gdata.auth
-import gdata.apps.service
+try:
+  import json as simplejson
+except ImportError:
+  import simplejson
 
+import httplib2
+import oauth2client.client
+import oauth2client.file
+import oauth2client.tools
+import gflags
+import apiclient
+import apiclient.discovery
+import apiclient.errors
 import gimaplib
 
 def SetupOptionParser():
-  def get_action_labels(option, opt, value, parser):
-    value = []
-    for arg in parser.rargs:
-      # stop on --foo like options
-      if arg[:2] == "--" and len(arg) > 2:
-        break
-      # stop on -a
-      if arg[:1] == "-" and len(arg) > 1:
-        break
-      value.append(arg.lower())
-
-    del parser.rargs[:len(value)]
-    if 'all' in value or 'all mail' in value:
-      value = []
-    parser.values.action_labels = value
-    # opt is like '--backup'
-    parser.values.action = opt[2:]
-
   # Usage message is the module's docstring.
-  parser = OptionParser(usage=__doc__)
-  parser.add_option('-e', '--email',
+  parser = OptionParser(usage=__doc__ % getGYBVersion(), add_help_option=False)
+  parser.add_option('--email',
     dest='email',
-    help='Full email address of user to backup')
-  parser.add_option('-a', '--action',
+    help='Full email address of user or group to act against')
+  action_choices = ['backup','restore', 'attach2drive', 'restore-group', 'count', 'purge', 'estimate', 'reindex']
+  parser.add_option('--action',
     type='choice',
-    choices=['backup','restore','estimate', 'reindex'],
+    choices=action_choices,
     dest='action',
     default='backup',
-    help='Optional: Action to perform. backup, restore or estimate.')
-  parser.add_option('--action-labels', help=SUPPRESS_HELP)
-  parser.add_option('--backup', 
-    action='callback', 
-    callback=get_action_labels,
-    help='Sets the ''backup'' action and takes an optional list of labels to backup.')
-  parser.add_option('--estimate', 
-    action='callback', 
-    callback=get_action_labels,
-    help='Sets the ''estimate'' action and takes an optional list of labels to estimate.')
-  parser.add_option('--restore', 
-    action='callback', 
-    callback=get_action_labels,
-    help='Sets the ''restore'' action and takes an optional list of labels to restore.')
-  parser.add_option('--resume', 
-    action='store_true', 
-    default=False,
-    help='With ''restore'', resume an interrupted restore.')
-  parser.add_option('--reindex', 
-    dest='action',
-    action='store_const',
-    const='reindex',
-    help=SUPPRESS_HELP)
-  parser.add_option('-f', '--folder',
-    dest='folder',
-    help='Optional: Folder to use for backup or restore. Default is ./gmail-backup/',
-    default='XXXuse-email-addessXXX')
-  parser.add_option('-s', '--search',
+    help='Action to perform - %s. Default is backup.' % ', '.join(action_choices))
+  parser.add_option('--search',
     dest='gmail_search',
-    default='',
-    help='Optional: Gmail search to perform, matching messages are backed up. Text like *7d* will be replaced by the date 7 days ago. For example, -s "after:*3d*" would search for "after:%s".' % (datetime.datetime.now() - datetime.timedelta(3)).strftime('%Y/%m/%d'))
-  parser.add_option('-v', '--version',
-    action='store_true',
-    dest='version',
-    help='just print GYB Version and then quit')
-  parser.add_option('-d', '--debug',
-    action='store_true',
-    dest='debug',
-    help='Turn on verbose debugging and connection information (for troubleshooting purposes only)')
-  parser.add_option('-l', '--label-restored',
+    default='in:anywhere',
+    help='Optional: On backup, estimate, count and purge, Gmail search to scope operation against')
+  parser.add_option('--local-folder',
+    dest='local_folder',
+    help='Optional: On backup, restore, estimate, local folder to use. Default is GYB-GMail-Backup-<email>',
+    default='XXXuse-email-addressXXX')
+  parser.add_option('--use-imap-folder',
+    dest='use_folder',
+    help='Optional: IMAP folder to act against. Default is "All Mail" label. You can run "--use_folder [Gmail]/Chats" to backup chat.')
+  parser.add_option('--label-restored',
     dest='label_restored',
-    help='Optional: Used on restore only. If specified, all restored messages will receive this label. For example, -l "3-21-11 Restore" will label all uploaded messages with that label.')
-  parser.add_option('-t', '--two-legged',
-    dest='two_legged',
-    help='Google Apps Business and Education accounts only. Use administrator two legged OAuth to authenticate as end user.')
-  parser.add_option('-C', '--compress',
-    dest='compress',
-    action='count',
-    default=1,
-    help='Optional: enable network compression')
-  parser.add_option('-c', '--no-compress',
-    dest='compress',
-    action='store_const',
-    const=0,
-    help='Optional: disable network compression')
-  parser.add_option('-F', '--fast-incremental',
-    dest='refresh',
-    action='store_false',
-    default=True,
-    help='Optional: skips refreshing labels for existing message')
-  parser.add_option('-B', '--batch-size',
+    help='Optional: On restore, all messages will additionally receive this label. For example, "--label_restored gyb-restored" will label all uploaded messages with a gyb-restored label.')
+  parser.add_option('--service-account',
+    dest='service_account',
+    help='Google Apps Business and Education only. Use OAuth 2.0 Service Account to authenticate.')
+  parser.add_option('--use-admin',
+    dest='use_admin',
+    help='Optional. On restore-group, authenticate as this admin user.')
+  parser.add_option('--batch-size',
     dest='batch_size',
     type='int',
     default=100,
-    help='Optional: Sets the number of messages to include batch when backing up.')
+    help='Optional: On backup, sets the number of messages to batch download.')
+  parser.add_option('--noresume', 
+    action='store_true', 
+    default=False,
+    help='Optional: On restores, start from beginning. Default is to resume where last restore left off.')
+  parser.add_option('--fast-incremental',
+    dest='refresh',
+    action='store_false',
+    default=True,
+    help='Optional: On backup, skips refreshing labels for existing message')
+  parser.add_option('--debug',
+    action='store_true',
+    dest='debug',
+    help='Turn on verbose debugging and connection information (troubleshooting)')
+  parser.add_option('--version',
+    action='store_true',
+    dest='version',
+    help='print GYB version and quit')
+  parser.add_option('--help',
+    action='help',
+    help='Display this message.')
   return parser
 
 def getProgPath():
@@ -178,86 +148,100 @@ def getOAuthFromConfigFile(email):
     return (False, False)
 
 def requestOAuthAccess(email, debug=False):
-  domain = email[email.find('@')+1:]
   scopes = ['https://mail.google.com/',                        # IMAP/SMTP client access
-            'https://www.googleapis.com/auth/userinfo#email']  # Email address access (verify token authorized by correct account
-  s = gdata.service.GDataService()
-  s.debug = debug
-  s.source = 'GotYourBack %s / %s / ' % (__version__,
-                   'Python %s.%s.%s %s' % (sys.version_info[0], 
-                   sys.version_info[1], sys.version_info[2], sys.version_info[3]))
-  s.SetOAuthInputParameters(gdata.auth.OAuthSignatureMethod.HMAC_SHA1, consumer_key='anonymous', consumer_secret='anonymous')
-  fetch_params = {'xoauth_displayname':'Got Your Back - Gmail Backup'}
-  try:
-    request_token = s.FetchOAuthRequestToken(scopes=scopes, extra_parameters=fetch_params)
-  except gdata.service.FetchingOAuthRequestTokenFailed, e:
-    if str(e).find('Timestamp') != -1:
-      print "In order to use GYB, your system time needs to be correct.\nPlease fix your time and try again."
-      sys.exit(5)
-    else:
-      print 'Error: %s' % e
-  if domain.lower() != 'gmail.com' and domain.lower() != 'googlemail.com':
-    url_params = {'hd': domain}
-  else:
-    url_params = {}
-  url = s.GenerateOAuthAuthorizationURL(request_token=request_token, extra_params=url_params)
-  raw_input('GYB will now open a web browser page in order for you to grant GYB access to your Gmail. Please make sure you\'re logged in to the correct Gmail account before granting access. Press enter to open the browser. Once you\'ve granted access you can switch back to GYB.')
-  try:
-    webbrowser.open(str(url))
-  except Exception, e:
-    pass
-  raw_input("You should now see the web page. If you don\'t, you can manually open:\n\n%s\n\nOnce you've granted GYB access, press the Enter key.\n" % url)
-  try:
-    final_token = s.UpgradeToOAuthAccessToken(request_token)
-  except gdata.service.TokenUpgradeFailed:
-    print 'Failed to upgrade the token. Did you grant GYB access in your browser?'
-    sys.exit(4)
+            'https://www.googleapis.com/auth/userinfo#email',
+            'https://www.googleapis.com/auth/apps.groups.migration']
+  CLIENT_SECRETS = getProgPath()+'client_secrets.json'
+  MISSING_CLIENT_SECRETS_MESSAGE = """
+WARNING: Please configure OAuth 2.0
+
+To make GYB run you will need to populate the client_secrets.json file
+found at:
+
+   %s
+
+with information from the APIs Console <https://code.google.com/apis/console>.
+
+""" % (CLIENT_SECRETS)
+  FLOW = oauth2client.client.flow_from_clientsecrets(CLIENT_SECRETS, scope=scopes, message=MISSING_CLIENT_SECRETS_MESSAGE)
   cfgFile = '%s%s.cfg' % (getProgPath(), email)
-  f = open(cfgFile, 'w')
-  f.write('%s\n%s' % (final_token.key, final_token.secret))
-  f.close()
-  return (final_token.key, final_token.secret)
+  storage = oauth2client.file.Storage(cfgFile)
+  credentials = storage.get()
+  if os.path.isfile(getProgPath()+'nobrowser.txt'):
+    gflags.FLAGS.auth_local_webserver = False
+  if credentials is None or credentials.invalid:
+    certFile = getProgPath()+'cacert.pem'
+    disable_ssl_certificate_validation = False
+    if os.path.isfile(getProgPath()+'noverifyssl.txt'):
+      disable_ssl_certificate_validation = True
+    http = httplib2.Http(ca_certs=certFile, disable_ssl_certificate_validation=disable_ssl_certificate_validation)
+    credentials = oauth2client.tools.run(FLOW, storage, short_url=True, http=http)
 
-def generateXOAuthString(token, secret, email, two_legged=False):
-  nonce = str(random.randrange(2**64 - 1))
-  timestamp = str(int(time.time()))
-  if two_legged:
-    request = atom.http_core.HttpRequest('https://mail.google.com/mail/b/%s/imap/?xoauth_requestor_id=%s' % (email, urllib.quote(email)), 'GET')
-    signature = gdata.gauth.generate_hmac_signature(
-        http_request=request, consumer_key=token, consumer_secret=secret, timestamp=timestamp,
-        nonce=nonce, version='1.0', next=None)
-    return '''GET https://mail.google.com/mail/b/%s/imap/?xoauth_requestor_id=%s oauth_consumer_key="%s",oauth_nonce="%s",oauth_signature="%s",oauth_signature_method="HMAC-SHA1",oauth_timestamp="%s",oauth_version="1.0"''' % (email, urllib.quote(email), token, nonce, urllib.quote(signature), timestamp)
+def generateXOAuthString(email, service_account=False, debug=False):
+  if debug:
+    httplib2.debuglevel = 4
+  if service_account:
+    f = file(getProgPath()+'privatekey.p12', 'rb')
+    key = f.read()
+    f.close()
+    scope = 'https://mail.google.com/'
+    credentials = oauth2client.client.SignedJwtAssertionCredentials(service_account_name=service_account, private_key=key, scope=scope, user_agent=getGYBVersion(' / '), prn=email)
+    disable_ssl_certificate_validation = False
+    if os.path.isfile(getProgPath()+'noverifyssl.txt'):
+      disable_ssl_certificate_validation = True
+    http = httplib2.Http(ca_certs=getProgPath()+'cacert.pem', disable_ssl_certificate_validation=disable_ssl_certificate_validation)
+    if debug:
+      httplib2.debuglevel = 4
+    http = credentials.authorize(http)
+    service = apiclient.discovery.build('oauth2', 'v2', http=http)
   else:
-    request = atom.http_core.HttpRequest('https://mail.google.com/mail/b/%s/imap/' % email, 'GET')
-    signature = gdata.gauth.generate_hmac_signature(
-        http_request=request, consumer_key='anonymous', consumer_secret='anonymous', timestamp=timestamp,
-        nonce=nonce, version='1.0', next=None, token=token, token_secret=secret)
-    return '''GET https://mail.google.com/mail/b/%s/imap/ oauth_consumer_key="anonymous",oauth_nonce="%s",oauth_signature="%s",oauth_signature_method="HMAC-SHA1",oauth_timestamp="%s",oauth_token="%s",oauth_version="1.0"''' % (email, nonce, urllib.quote(signature), timestamp, urllib.quote(token))
+    cfgFile = '%s%s.cfg' % (getProgPath(), email)
+    storage = oauth2client.file.Storage(cfgFile)
+    credentials = storage.get()
+    if credentials is None or credentials.invalid:
+      requestOAuthAccess(email, debug)
+      credentials = storage.get()
+  if credentials.access_token_expired:
+    disable_ssl_certificate_validation = False
+    if os.path.isfile(getGamPath()+'noverifyssl.txt'):
+      disable_ssl_certificate_validation = True
+    credentials.refresh(httplib2.Http(ca_certs=getProgPath()+'cacert.pem', disable_ssl_certificate_validation=disable_ssl_certificate_validation))
+  return "user=%s\001auth=OAuth %s\001\001" % (email, credentials.access_token)
 
-def getMessagesToBackupList(imapconn, gmail_search='in:anywhere'):
-  search_in = gmail_search
-  gmail_search = ''
-  while search_in:
-    match = re.search('(.*?)\*(\d+)([dwmy])(.*)', search_in)
-    if match:
-      prefix, value, time_unit, search_in = match.groups()
-      days = int(value) 
-      if time_unit == 'd':
-        pass
-      elif time_unit == 'w':
-        days *= 7
-      elif time_unit == 'm':
-        days *= 30
-      elif time_unit == 'y':
-        days *= 365
-      date = (datetime.datetime.now() - datetime.timedelta(days)).strftime('%Y/%m/%d')
-      gmail_search += prefix + date
-    else:
-      gmail_search += search_in
-      break
-  if gmail_search:
-    print 'using Gmail search: %s' % gmail_search
-  return gimaplib.GImapSearch(imapconn, gmail_search)
+def callGAPI(service, function, soft_errors=False, throw_reasons=[], **kwargs):
+  method = getattr(service, function)
+  retries = 3
+  for n in range(1, retries+1):
+    try:
+      return method(**kwargs).execute()
+    except apiclient.errors.HttpError, e:
+      error = simplejson.loads(e.content)
+      try:
+        reason = error['error']['errors'][0]['reason']
+        http_status = error['error']['code']
+        message = error['error']['errors'][0]['message']
+        if reason in throw_reasons:
+          raise
+        if n != retries and reason in ['rateLimitExceeded', 'userRateLimitExceeded', 'backendError']:
+          wait_on_fail = (2 ** n) if (2 ** n) < 60 else 60
+          randomness = float(random.randint(1,1000)) / 1000
+          wait_on_fail = wait_on_fail + randomness
+          if n > 3: sys.stderr.write('\nTemp error %s. Backing off %s seconds...' % (reason, int(wait_on_fail)))
+          time.sleep(wait_on_fail)
+          if n > 3: sys.stderr.write('attempt %s/%s\n' % (n+1, retries))
+          continue
+        sys.stderr.write('\n%s: %s - %s\n' % (http_status, message, reason))
+        if soft_errors:
+          sys.stderr.write(' - Giving up.\n')
+          return
+        else:
+          sys.exit(int(http_status))
+      except KeyError:
+        sys.stderr.write('Unknown Error: %s' % e)
+        sys.exit(1)
+    except oauth2client.client.AccessTokenRefreshError, e:
+      sys.stderr.write('Error: Authentication Token Error - %s' % e)
+      sys.exit(403)
 
 def message_is_backed_up(message_num, sqlcur, sqlconn, backup_folder):
     try:
@@ -296,7 +280,7 @@ def check_db_settings(db_settings, action, user_email_address):
     sys.exit(4)
 
   # Only restores are allowed to use a backup folder started with another account (can't allow 2 Google Accounts to backup/estimate from same folder)
-  if action != 'restore':
+  if action not in ['restore', 'restore-group']:
     if user_email_address.lower() != db_settings['email_address'].lower():
       print "\n\nSorry, this backup folder should only be used with the %s account that it was created with for incremental backups. You specified the %s account" % (db_settings['email_address'], user_email_address)
       sys.exit(5)
@@ -333,11 +317,10 @@ def convertDB(sqlconn, uidvalidity, oldversion):
                         (('uidvalidity',uidvalidity), 
                          ('db_version', __db_schema_version__)) )   
       sqlconn.commit()
-      print "GYB database converted to version %s" % __db_schema_version__
   except sqlite3.OperationalError, e:
       print "Conversion error: %s" % e.message
-      sys.exit(4)
 
+  print "GYB database converted to version %s" % __db_schema_version__
 
 def getMessageIDs (sqlconn, backup_folder):   
   sqlcur = sqlconn.cursor()
@@ -399,27 +382,29 @@ def rebuildUIDTable(imapconn, sqlconn):
        print e.message
        print uid, msgid
       if sqlcur.lastrowid is None:
-        print uid, msgid
+        print uid, rfc822_msgid
     print "\b.",
     sys.stdout.flush() 
   # There is no need to maintain the Index for normal operations
   sqlcur.execute('DROP INDEX msgidx')
   sqlconn.commit()
 
-def doesTokenMatchEmail(cli_email, key, secret, debug=False):
-  s = gdata.apps.service.AppsService(source=__program_name__+' '+__version__)
-  s.debug = debug
-  s.SetOAuthInputParameters(gdata.auth.OAuthSignatureMethod.HMAC_SHA1, consumer_key='anonymous', consumer_secret='anonymous')
-  oauth_input_params = gdata.auth.OAuthInputParams(gdata.auth.OAuthSignatureMethod.HMAC_SHA1, consumer_key='anonymous', consumer_secret='anonymous')
-  #oauth_token = gdata.auth.OAuthToken(key=key, secret=secret, oauth_input_parameters=oauth_input_parameters)
-  s.SetOAuthToken(gdata.auth.OAuthToken(key=key, secret=secret, oauth_input_params=oauth_input_params))
-  server_response = s.request('GET', 'https://www.googleapis.com/userinfo/email')
-  result_body = server_response.read()
-  if server_response.status == 200:
-    param_dict = urlparse.parse_qs(result_body)
-    authed_email = param_dict['email'][0]
-    if authed_email.lower() == cli_email.lower():
-      return True
+def doesTokenMatchEmail(cli_email, debug=False):
+  cfgFile = '%s%s.cfg' % (getProgPath(), cli_email)
+  storage = oauth2client.file.Storage(cfgFile)
+  credentials = storage.get()
+  disable_ssl_certificate_validation = False
+  if os.path.isfile(getProgPath()+'noverifyssl.txt'):
+    disable_ssl_certificate_validation = True
+  http = httplib2.Http(ca_certs=getProgPath()+'cacert.pem', disable_ssl_certificate_validation=disable_ssl_certificate_validation)
+  if debug:
+    httplib2.debuglevel = 4
+  if credentials.access_token_expired:
+    credentials.refresh(http)
+  oa2 = apiclient.discovery.build('oauth2', 'v2', http=http)
+  token_info = callGAPI(service=oa2, function='tokeninfo', access_token=credentials.access_token)
+  if token_info['email'].lower() == cli_email.lower():
+    return True
   return False
 
 def restart_line():
@@ -450,12 +435,12 @@ def initializeDB(sqlcur, sqlconn, email, uidvalidity):
 
 def get_message_size(imapconn, uids):
   if type(uids) == type(int()):
-    uid_string == str(uids)
+    uid_string == str(uid)
   else:
     uid_string = ','.join(uids)
   t, d = imapconn.uid('FETCH', uid_string, '(RFC822.SIZE)')
   if t != 'OK':
-    print "Failed to retrieve size for message %s" % uid_string
+    print "Failed to retrieve size for message %s" % uid
     print "%s %s" % (t, d)
     exit(9)
   total_size = 0
@@ -463,67 +448,69 @@ def get_message_size(imapconn, uids):
     message_size = int(re.search('^[0-9]* \(UID [0-9]* RFC822.SIZE ([0-9]*)\)$', x).group(1))
     total_size = total_size + message_size
   return total_size
-  
+
+def getGYBVersion(divider="\n"):
+  return ('Got Your Back %s~DIV~%s - %s~DIV~Python %s.%s.%s %s-bit %s~DIV~%s %s' % (__version__, __author__, __email__,
+                   sys.version_info[0], sys.version_info[1], sys.version_info[2], struct.calcsize('P')*8,
+                   sys.version_info[3], platform.platform(), platform.machine())).replace('~DIV~', divider)
+
 def main(argv):
   options_parser = SetupOptionParser()
-  (options, args) = options_parser.parse_args(argv)
+  (options, args) = options_parser.parse_args(args=argv)
   if options.version:
-    print 'Got Your Back %s' % __version__
+    print getGYBVersion()
     sys.exit(0)
   if not options.email:
     options_parser.print_help()
-    print "ERROR: --email or -e is required."
+    print "\nERROR: --email is required."
     return
-  if options.folder == 'XXXuse-email-addessXXX':
-    options.folder = "GYB-GMail-Backup-%s" % options.email
-  if options.two_legged: # 2-Legged OAuth (Admins)
-    if os.path.isfile(options.two_legged):
-      f = open(options.two_legged, 'r')
-      key = f.readline()[0:-1]
-      secret = f.readline()
-      f.close()
+  if options.local_folder == 'XXXuse-email-addressXXX':
+    options.local_folder = "GYB-GMail-Backup-%s" % options.email
+  if options.service_account: # Service Account OAuth
+    if not os.path.isfile(getProgPath()+'privatekey.p12'):
+      print 'Error: you must have a privatekey.p12 file downloaded from the Google API Console and saved to the same path as GAM to use a service account.'
+      sys.exit(1)
+  else:  # 3-Legged OAuth
+    if options.use_admin:
+      auth_as = options.use_admin
     else:
-      f = open(options.two_legged, 'w')
-      key = raw_input('Enter your domain\'s OAuth consumer key: ')
-      secret = raw_input('Enter your domain\'s OAuth consumer secret: ')
-      f.write('%s\n%s' % (key, secret))
-      f.close()
-  else:  # 3-Legged OAuth (End Users)
-    key, secret = getOAuthFromConfigFile(options.email)
-    if not key:
-      key, secret = requestOAuthAccess(options.email, options.debug)
-    if not doesTokenMatchEmail(options.email, key, secret, options.debug):
-      print "Error: you did not authorize the OAuth token in the browser with the %s Google Account. Please make sure you are logged in to the correct account when authorizing the token in the browser." % options.email
-      cfgFile = '%s%s.cfg' % (getProgPath(), options.email)
+      auth_as = options.email
+    requestOAuthAccess(auth_as, options.debug)
+    if not doesTokenMatchEmail(auth_as, options.debug):
+      print "Error: you did not authorize the OAuth token in the browser with the %s Google Account. Please make sure you are logged in to the correct account when authorizing the token in the browser." % auth_as
+      cfgFile = '%s%s.cfg' % (getProgPath(), auth_as)
       os.remove(cfgFile)
       sys.exit(9)
 
-  imapconn = gimaplib.ImapConnect(generateXOAuthString(key, secret, options.email, options.two_legged), options.debug, options.compress) # dynamically generate the xoauth_string since they expire after 10 minutes
-  if not os.path.isdir(options.folder):
-    if options.action == 'backup':
-      os.mkdir(options.folder)
-    elif options.action == 'restore':
-      print 'Error: Folder %s does not exist. Cannot restore.' % options.folder
+  if not os.path.isdir(options.local_folder):
+    if options.action in ['backup', 'attach2drive']:
+      os.mkdir(options.local_folder)
+    elif options.action in ['restore', 'restore-group']:
+      print 'Error: Folder %s does not exist. Cannot restore.' % options.local_folder
       sys.exit(3)
 
-  global ALL_MAIL
-  ALL_MAIL = gimaplib.GImapGetFolder(imapconn)
-  if ALL_MAIL == None:
-    # Last ditched best guess but All Mail is probably hidden from IMAP...
-    ALL_MAIL = '[Gmail]/All Mail'
-  r, d = imapconn.select(ALL_MAIL, readonly=True)
-  if r == 'NO':
-    print "Error: Cannot select the Gmail \"All Mail\" folder. Please make sure it is not hidden from IMAP."
-    sys.exit(3)
-  uidvalidity = imapconn.response('UIDVALIDITY')[1][0]
+  if options.action not in ['restore-group']:
+    imapconn = gimaplib.ImapConnect(generateXOAuthString(options.email, options.service_account), options.debug)
+    global ALL_MAIL, TRASH, SPAM
+    ALL_MAIL = gimaplib.GImapGetFolder(imapconn)
+    TRASH = gimaplib.GImapGetFolder(imapconn, foldertype='\Trash')
+    SPAM = gimaplib.GImapGetFolder(imapconn, foldertype='\Spam')
+    if ALL_MAIL == None:
+      # Last ditched best guess but All Mail is probably hidden from IMAP...
+      ALL_MAIL = '[Gmail]/All Mail'
+    r, d = imapconn.select(ALL_MAIL, readonly=True)
+    if r == 'NO':
+      print "Error: Cannot select the Gmail \"All Mail\" folder. Please make sure it is not hidden from IMAP."
+      sys.exit(3)
+    uidvalidity = imapconn.response('UIDVALIDITY')[1][0]
 
-  sqldbfile = os.path.join(options.folder, 'msg-db.sqlite')
+  sqldbfile = os.path.join(options.local_folder, 'msg-db.sqlite')
   # Do we need to initialize a new database?
-  newDB = (not os.path.isfile(sqldbfile)) and (options.action == 'backup')
+  newDB = (not os.path.isfile(sqldbfile)) and (options.action in ['backup', 'attach2drive'])
   
   #If we're not doing a estimate or if the db file actually exists we open it (creates db if it doesn't exist)
-  if options.action != 'estimate' or os.path.isfile(sqldbfile):
-    print "\nUsing backup folder %s" % options.folder
+  if options.action not in ['estimate', 'count', 'purge'] or os.path.isfile(sqldbfile):
+    print "\nUsing backup folder %s" % options.local_folder
     global sqlconn
     global sqlcur
     sqlconn = sqlite3.connect(sqldbfile, detect_types=sqlite3.PARSE_DECLTYPES)
@@ -533,13 +520,13 @@ def main(argv):
       initializeDB(sqlcur, sqlconn, options.email, uidvalidity)
     db_settings = get_db_settings(sqlcur)
     check_db_settings(db_settings, options.action, options.email)
-    if options.action != 'restore':
+    if options.action not in ['restore', 'restore-group']:
       if ('uidvalidity' not in db_settings or 
           db_settings['db_version'] <  __db_schema_version__):
         convertDB(sqlconn, uidvalidity, db_settings['db_version'])
         db_settings = get_db_settings(sqlcur)
       if options.action == 'reindex':
-        getMessageIDs(sqlconn, options.folder)
+        getMessageIDs(sqlconn, options.local_folder)
         rebuildUIDTable(imapconn, sqlconn)
         sqlconn.execute('''
             UPDATE settings SET value = ? where name = 'uidvalidity'
@@ -551,19 +538,15 @@ def main(argv):
         print "Because of changes on the Gmail server, this folder cannot be used for incremental backups."
         sys.exit(3)
 
-  if options.action_labels:
-    temp_search = ""
-    for label in options.action_labels:
-      temp_search += "l:" + label.replace(' ', '-') + " OR "
-    options.gmail_search = temp_search[:-4] + ' ' +  options.gmail_search
-    if options.debug:
-      print "Search string changed to: %s" % options.gmail_search
-
-  # BACKUP #
-  if options.action == 'backup':
-    imapconn.select(ALL_MAIL, readonly=True)
-    messages_to_process = getMessagesToBackupList(imapconn, options.gmail_search)
-    backup_path = options.folder
+  # ATTACH2DRIVE
+  if options.action == 'attach2drive':
+    if options.use_folder:
+      print 'Using folder %s' % options.use_folder
+      imapconn.select(options.use_folder, readonly=True)
+    else:
+      imapconn.select(ALL_MAIL, readonly=True)
+    messages_to_process = gimaplib.GImapSearch(imapconn, options.gmail_search)
+    backup_path = options.local_folder
     if not os.path.isdir(backup_path):
       os.mkdir(backup_path)
     messages_to_backup = []
@@ -571,11 +554,7 @@ def main(argv):
     #Determine which messages from the search we haven't processed before.
     print "GYB needs to examine %s messages" % len(messages_to_process)
     for message_num in messages_to_process:
-      if newDB:
-        # short circuit the db and filesystem checks to save unnecessary DB and Disk IO
-        messages_to_backup.append(message_num)
-        continue
-      if message_is_backed_up(message_num, sqlcur, sqlconn, options.folder):
+      if not newDB and message_is_backed_up(message_num, sqlcur, sqlconn, options.local_folder):
         messages_to_refresh.append(message_num)
       else:
         messages_to_backup.append(message_num)
@@ -601,17 +580,87 @@ def main(argv):
             sleep_time = math.pow(2, bad_count)
             sys.stdout.write("\nServer responded with %s %s, will retry in %s seconds" % (r, d, str(sleep_time)))
             time.sleep(sleep_time) # sleep 2 seconds, then 4, 8, 16, 32, 64, 128
-            imapconn = gimaplib.ImapConnect(generateXOAuthString(key, secret, options.email, options.two_legged), options.debug, options.compress)
+            imapconn = gimaplib.ImapConnect(generateXOAuthString(options.email, options.service_account), options.debug)
             imapconn.select(ALL_MAIL, readonly=True)
             continue
           break
         except imaplib.IMAP4.abort, e:
           print 'imaplib.abort error:%s, retrying...' % e
-          imapconn = gimaplib.ImapConnect(generateXOAuthString(key, secret, options.email, options.two_legged), options.debug, options.compress)
+          imapconn = gimaplib.ImapConnect(generateXOAuthString(options.email, options.service_account), options.debug)
           imapconn.select(ALL_MAIL, readonly=True)
         except socket.error, e:
           print 'socket.error:%s, retrying...' % e
-          imapconn = gimaplib.ImapConnect(generateXOAuthString(key, secret, options.email, options.two_legged), options.debug, options.compress)
+          imapconn = gimaplib.ImapConnect(generateXOAuthString(options.email, options.service_account), options.debug)
+          imapconn.select(ALL_MAIL, readonly=True)
+      for everything_else_string, full_message in (x for x in d if x != ')'):
+        msg = email.message_from_string(full_message)
+        for part in msg.walk():
+          # multipart/* are just containers
+          if part.get_content_maintype() == 'multipart':
+            continue
+          # Applications should really sanitize the given filename so that an
+          # email message can't be used to overwrite important files
+          filename = part.get_filename()
+          if not filename or filename[-4:].lower() != '.pdf':
+            continue
+          filename = filename.replace('\n', '').replace('\r', '').replace('\\', '-').replace('/', '-')
+          fp = open(os.path.join(options.local_folder, filename), 'wb')
+          fp.write(part.get_payload(decode=True))
+          fp.close()
+
+  # BACKUP #
+  if options.action == 'backup':
+    if options.use_folder:
+      print 'Using folder %s' % options.use_folder
+      imapconn.select(options.use_folder, readonly=True)
+    else:
+      imapconn.select(ALL_MAIL, readonly=True)
+    messages_to_process = gimaplib.GImapSearch(imapconn, options.gmail_search)
+    backup_path = options.local_folder
+    if not os.path.isdir(backup_path):
+      os.mkdir(backup_path)
+    messages_to_backup = []
+    messages_to_refresh = []
+    #Determine which messages from the search we haven't processed before.
+    print "GYB needs to examine %s messages" % len(messages_to_process)
+    for message_num in messages_to_process:
+      if not newDB and message_is_backed_up(message_num, sqlcur, sqlconn, options.local_folder):
+        messages_to_refresh.append(message_num)
+      else:
+        messages_to_backup.append(message_num)
+    print "GYB already has a backup of %s messages" % (len(messages_to_process) - len(messages_to_backup))
+    backup_count = len(messages_to_backup)
+    print "GYB needs to backup %s messages" % backup_count
+    messages_at_once = options.batch_size
+    backed_up_messages = 0
+    header_parser = email.parser.HeaderParser()
+    for working_messages in batch(messages_to_backup, messages_at_once):
+      #Save message content
+      batch_string = ','.join(working_messages)
+      bad_count = 0
+      while True:
+        try:
+          r, d = imapconn.uid('FETCH', batch_string, '(X-GM-LABELS INTERNALDATE FLAGS BODY.PEEK[])')
+          if r != 'OK':
+            bad_count = bad_count + 1
+            if bad_count > 7:
+              print "\nError: failed to retrieve messages."
+              print "%s %s" % (r, d)
+              sys.exit(5)
+            sleep_time = math.pow(2, bad_count)
+            sys.stdout.write("\nServer responded with %s %s, will retry in %s seconds" % (r, d, str(sleep_time)))
+            time.sleep(sleep_time) # sleep 2 seconds, then 4, 8, 16, 32, 64, 128
+            imapconn = gimaplib.ImapConnect(generateXOAuthString(options.email, options.service_account), options.debug)
+            imapconn.select(ALL_MAIL, readonly=True)
+            continue
+          break
+        except imaplib.IMAP4.abort, e:
+          print 'imaplib.abort error:%s, retrying...' % e
+          imapconn = gimaplib.ImapConnect(generateXOAuthString(options.email, options.service_account), options.debug)
+          imapconn.select(ALL_MAIL, readonly=True)
+        except socket.error, e:
+          print 'socket.error:%s, retrying...' % e
+          imapconn = gimaplib.ImapConnect(generateXOAuthString(options.email, options.service_account), options.debug)
           imapconn.select(ALL_MAIL, readonly=True)
       for everything_else_string, full_message in (x for x in d if x != ')'):
         search_results = re.search('X-GM-LABELS \((.*)\) UID ([0-9]*) (INTERNALDATE \".*\") (FLAGS \(.*\))', everything_else_string)
@@ -629,9 +678,9 @@ def main(argv):
                                         str(message_date.tm_mday))
         message_rel_filename = os.path.join(message_rel_path, 
                                             message_file_name)
-        message_full_path = os.path.join(options.folder, 
+        message_full_path = os.path.join(options.local_folder, 
                                          message_rel_path)
-        message_full_filename = os.path.join(options.folder, 
+        message_full_filename = os.path.join(options.local_folder, 
                                              message_rel_filename)
         if not os.path.isdir(message_full_path):
           os.makedirs(message_full_path)
@@ -703,17 +752,17 @@ def main(argv):
             sleep_time = math.pow(2, bad_count)
             sys.stdout.write("\nServer responded with %s %s, will retry in %s seconds" % (r, d, str(sleep_time)))
             time.sleep(sleep_time) # sleep 2 seconds, then 4, 8, 16, 32, 64, 128
-            imapconn = gimaplib.ImapConnect(generateXOAuthString(key, secret, options.email, options.two_legged), options.debug, options.compress)
+            imapconn = gimaplib.ImapConnect(generateXOAuthString(options.email, options.service_account), options.debug)
             imapconn.select(ALL_MAIL, readonly=True)
             continue
           break
         except imaplib.IMAP4.abort, e:
           print 'imaplib.abort error:%s, retrying...' % e
-          imapconn = gimaplib.ImapConnect(generateXOAuthString(key, secret, options.email, options.two_legged), options.debug, options.compress)
+          imapconn = gimaplib.ImapConnect(generateXOAuthString(options.email, options.service_account), options.debug)
           imapconn.select(ALL_MAIL, readonly=True)
         except socket.error, e:
           print 'socket.error:%s, retrying...' % e
-          imapconn = gimaplib.ImapConnect(generateXOAuthString(key, secret, options.email, options.two_legged), options.debug, options.compress)
+          imapconn = gimaplib.ImapConnect(generateXOAuthString(options.email, options.service_account), options.debug)
           imapconn.select(ALL_MAIL, readonly=True)
       for results in d:
         search_results = re.search('X-GM-LABELS \((.*)\) UID ([0-9]*) (FLAGS \(.*\))', results)
@@ -755,72 +804,41 @@ def main(argv):
  
   # RESTORE #
   elif options.action == 'restore':
-    imapconn.select(ALL_MAIL)  # read/write!
-    resumedb = os.path.join(options.folder, 
-                            "%s-restored.sqlite" % options.email)
-    sqlcur.execute('ATTACH ? as resume', (resumedb,))
-    sqlcur.executescript('''
-       CREATE TABLE IF NOT EXISTS resume.restored_messages 
-                      (message_num INTEGER PRIMARY KEY); 
-       CREATE TEMP TABLE skip_messages (message_num INTEGER PRIMARY KEY);
-    ''')
-    if options.resume:
-      sqlcur.execute('''
-         INSERT INTO skip_messages SELECT message_num from restored_messages
-      ''')
-    if options.action_labels:
-      sqlcur.execute(
-         'CREATE TEMP TABLE restore_labels (label TEXT COLLATE NOCASE)')
-      for label in options.action_labels:
-        if label == 'inbox':
-          label = '\\Inbox'
-        elif label == 'sent':
-          label = '\\Sent'
-        elif label == 'sent mail':
-          label = '\\Sent'
-        elif label == 'starred':
-          label = '\\Starred'
-        elif label == 'draft':
-          label = '\\Draft'
-        elif label == 'important':
-          label = '\\Important'
-        sqlcur.execute(
-          'INSERT INTO restore_labels (label) VALUES(?)',
-                         ((label),))
-      sqlcur.execute('''
-        SELECT message_num, message_internaldate, message_filename FROM messages
-          WHERE message_num IN 
-          (SELECT DISTINCT message_num from restore_labels NATURAL JOIN labels)
-          AND message_num NOT IN skip_messages
-      ''')
+    if options.use_folder:
+      imapconn.select(options.use_folder)
     else:
-      sqlcur.execute('''
-        SELECT message_num, message_internaldate, message_filename FROM messages
-          WHERE message_num NOT IN skip_messages
-      ''') # All messages
+      imapconn.select(ALL_MAIL)  # read/write!
+    resumedb = os.path.join(options.local_folder, 
+                            "%s-restored.sqlite" % options.email)
+    if options.noresume:
+      try:
+        os.remove(resumedb)
+      except IOError:
+        pass
+    sqlcur.execute('ATTACH ? as resume', (resumedb,))
+    sqlcur.executescript('''CREATE TABLE IF NOT EXISTS resume.restored_messages 
+                        (message_num INTEGER PRIMARY KEY); 
+                        CREATE TEMP TABLE skip_messages (message_num INTEGER PRIMARY KEY);''')
+    sqlcur.execute('''INSERT INTO skip_messages SELECT message_num from restored_messages''')
+    sqlcur.execute('''SELECT message_num, message_internaldate, message_filename FROM messages
+                      WHERE message_num NOT IN skip_messages ORDER BY message_internaldate DESC''') # All messages
     messages_to_restore_results = sqlcur.fetchall()
     restore_count = len(messages_to_restore_results)
-    if restore_count == 0 and options.action_labels:
-      print "No messages found in label: %s" % options.action_labels
-      print "Available labels are:"
-      for label in sqlcur.execute(
-                   'SELECT DISTINCT label COLLATE NOCASE FROM labels'):
-        print "\t%s" % label
     current = 0
     for x in messages_to_restore_results:
       restart_line()
       current += 1
-      sys.stdout.write("restoring message %s of %s" % (current, restore_count))
+      sys.stdout.write("restoring message %s of %s from %s" % (current, restore_count, x[1]))
       sys.stdout.flush()
       message_num = x[0]
       message_internaldate = x[1]
       message_internaldate_seconds = time.mktime(message_internaldate.timetuple())
       message_filename = x[2]
-      if not os.path.isfile(os.path.join(options.folder, message_filename)):
-        print 'WARNING! file %s does not exist for message %s' % (os.path.join(options.folder, message_filename), message_num)
+      if not os.path.isfile(os.path.join(options.local_folder, message_filename)):
+        print 'WARNING! file %s does not exist for message %s' % (os.path.join(options.local_folder, message_filename), message_num)
         print '  this message will be skipped.'
         continue
-      f = open(os.path.join(options.folder, message_filename), 'rb')
+      f = open(os.path.join(options.local_folder, message_filename), 'rb')
       full_message = f.read()
       f.close()
       labels_query = sqlcur.execute('SELECT DISTINCT label FROM labels WHERE message_num = ?', (message_num,))
@@ -852,11 +870,11 @@ def main(argv):
           break
         except imaplib.IMAP4.abort, e:
           print '\nimaplib.abort error:%s, retrying...' % e
-          imapconn = gimaplib.ImapConnect(generateXOAuthString(key, secret, options.email, options.two_legged), options.debug, options.compress)
+          imapconn = gimaplib.ImapConnect(generateXOAuthString(options.email, options.service_account), options.debug)
           imapconn.select(ALL_MAIL)
         except socket.error, e:
           print '\nsocket.error:%s, retrying...' % e
-          imapconn = gimaplib.ImapConnect(generateXOAuthString(key, secret, options.email, options.two_legged), options.debug, options.compress)
+          imapconn = gimaplib.ImapConnect(generateXOAuthString(options.email, options.service_account), options.debug)
           imapconn.select(ALL_MAIL)
       #Save the fact that it is completed
       sqlconn.execute(
@@ -865,18 +883,101 @@ def main(argv):
       sqlconn.commit()
     sqlconn.execute('DETACH resume')
     sqlconn.commit()
-  
-  # ESTIMATE #
-  elif options.action == 'estimate':
-    imapconn.select(ALL_MAIL, readonly=True)
-    messages_to_process = getMessagesToBackupList(imapconn, options.gmail_search)
+
+  # RESTORE-GROUP #
+  elif options.action == 'restore-group':
+    resumedb = os.path.join(options.local_folder,
+                            "%s-restored.sqlite" % options.email)
+    if options.noresume:
+      try:
+        os.remove(resumedb)
+      except IOError:
+        pass
+    sqlcur.execute('ATTACH ? as resume', (resumedb,))
+    sqlcur.executescript('''CREATE TABLE IF NOT EXISTS resume.restored_messages
+                      (message_num INTEGER PRIMARY KEY);
+       CREATE TEMP TABLE skip_messages (message_num INTEGER PRIMARY KEY);''')
+    sqlcur.execute('''INSERT INTO skip_messages SELECT message_num from restored_messages''')
+    sqlcur.execute('''SELECT message_num, message_internaldate, message_filename FROM messages
+          WHERE message_num NOT IN skip_messages ORDER BY message_internaldate DESC''') # All messages
+    messages_to_restore_results = sqlcur.fetchall()
+    restore_count = len(messages_to_restore_results)
+    if options.service_account:
+      if not options.use_admin:
+        print 'Error: --restore_group and --service_account require --user_admin to specify Google Apps Admin to utilize.'
+        sys.exit(5)
+      f = file(getProgPath()+'privatekey.p12', 'rb')
+      key = f.read()
+      f.close()
+      scope = 'https://www.googleapis.com/auth/apps.groups.migration'
+      credentials = oauth2client.client.SignedJwtAssertionCredentials(options.service_account, key, scope=scope, prn=options.use_admin)
+      disable_ssl_certificate_validation = False
+      if os.path.isfile(getProgPath()+'noverifyssl.txt'):
+        disable_ssl_certificate_validation = True
+      http = httplib2.Http(ca_certs=getProgPath()+'cacert.pem', disable_ssl_certificate_validation=disable_ssl_certificate_validation)
+      if options.debug:
+        httplib2.debuglevel = 4
+      http = credentials.authorize(http)
+    elif options.use_admin:
+      cfgFile = '%s%s.cfg' % (getProgPath(), options.use_admin)
+      f = open(cfgFile, 'rb')
+      token = simplejson.load(f)
+      f.close()
+      storage = oauth2client.file.Storage(cfgFile)
+      credentials = storage.get()
+      disable_ssl_certificate_validation = False
+      if os.path.isfile(getProgPath()+'noverifyssl.txt'):
+        disable_ssl_certificate_validation = True
+      http = httplib2.Http(ca_certs=getProgPath()+'cacert.pem', disable_ssl_certificate_validation=disable_ssl_certificate_validation)
+      if options.debug:
+        httplib2.debuglevel = 4
+      http = credentials.authorize(http)
+    else:
+      print 'Error: restore-group requires that --use_admin is also specified.'
+      sys.exit(5)
+    gmig = apiclient.discovery.build('groupsmigration', 'v1', http=http)
+    current = 0
+    for x in messages_to_restore_results:
+      restart_line()
+      current += 1
+      sys.stdout.write("restoring message %s of %s from %s" % (current, restore_count, x[1]))
+      sys.stdout.flush()
+      message_num = x[0]
+      message_internaldate = x[1]
+      message_filename = x[2]
+      if not os.path.isfile(os.path.join(options.local_folder, message_filename)):
+        print 'WARNING! file %s does not exist for message %s' % (os.path.join(options.local_folder, message_filename), message_num)
+        print '  this message will be skipped.'
+        continue
+      f = open(os.path.join(options.local_folder, message_filename), 'rb')
+      full_message = f.read()
+      f.close()
+      media = apiclient.http.MediaFileUpload(os.path.join(options.local_folder, message_filename), mimetype='message/rfc822')
+      callGAPI(service=gmig.archive(), function='insert', groupId=options.email, media_body=media)
+      #Save the fact that it is completed
+      sqlconn.execute(
+#        'INSERT OR IGNORE INTO restored_messages (message_num) VALUES (?)',
+         'INSERT INTO restored_messages (message_num) VALUES (?)',
+           (message_num,))
+      sqlconn.commit()
+    sqlconn.execute('DETACH resume')
+    sqlconn.commit()
+
+  # COUNT 
+  elif options.action == 'count':
+    if options.use_folder:
+      print 'Using label %s' % options.use_folder
+      imapconn.select(options.use_folder, readonly=True)
+    else:
+      imapconn.select(ALL_MAIL, readonly=True)
+    messages_to_process = gimaplib.GImapSearch(imapconn, options.gmail_search)
     messages_to_estimate = []
     #if we have a sqlcur , we'll compare messages to the db
     #otherwise just estimate everything
     for message_num in messages_to_process:
       try:
         sqlcur
-        if message_is_backed_up(message_num, sqlcur, sqlconn, options.folder):
+        if message_is_backed_up(message_num, sqlcur, sqlconn, options.local_folder):
           continue
         else:
           messages_to_estimate.append(message_num)
@@ -884,7 +985,67 @@ def main(argv):
         messages_to_estimate.append(message_num)
     estimate_count = len(messages_to_estimate)
     total_size = float(0)
+    list_position = 0
     messages_at_once = 10000
+    loop_count = 0
+    print "%s,%s" % (options.email, estimate_count)
+
+  # PURGE #
+  elif options.action == 'purge':
+    imapconn.select(ALL_MAIL, readonly=False)
+    messages_to_process = gimaplib.GImapSearch(imapconn, options.gmail_search)
+    print 'Moving %s messages from All Mail to Trash for %s' % (len(messages_to_process), options.email)
+    messages_at_once = 1000
+    loop_count = 0
+    for working_messages in batch(messages_to_process, messages_at_once):
+      uid_string = ','.join(working_messages)
+      t, d = imapconn.uid('STORE', uid_string, '+X-GM-LABELS', '\\Trash')
+    r, d = imapconn.select(SPAM, readonly=False)
+    if r == 'NO':
+      print "Error: Cannot select the Gmail \"Spam\" folder. Please make sure it is not hidden from IMAP."
+      sys.exit(3)
+    spam_uids = gimaplib.GImapSearch(imapconn, options.gmail_search)
+    print 'Purging %s Spam messages for %s' % (len(spam_uids), options.email)
+    for working_messages in batch(spam_uids, messages_at_once):
+      spam_uid_string = ','.join(working_messages)
+      t, d = imapconn.uid('STORE', spam_uid_string, '+FLAGS', '\Deleted')
+    imapconn.expunge()
+    r, d = imapconn.select(TRASH, readonly=False)
+    if r == 'NO':
+      print "Error: Cannot select the Gmail \"Trash\" folder. Please make sure it is not hidden from IMAP."
+      sys.exit(3)
+    trash_uids = gimaplib.GImapSearch(imapconn, options.gmail_search) 
+    print 'Purging %s Trash messages for %s' % (len(trash_uids), options.email)
+    for working_messages in batch(trash_uids, messages_at_once):
+      trash_uid_string = ','.join(working_messages)
+      t, d = imapconn.uid('STORE', trash_uid_string, '+FLAGS', '\Deleted')
+    imapconn.expunge()
+
+  # ESTIMATE #
+  elif options.action == 'estimate':
+    if options.use_folder:
+      imapconn.select(options.use_folder, readonly=True)
+    else:
+      imapconn.select(ALL_MAIL, readonly=True)
+    messages_to_process = gimaplib.GImapSearch(imapconn, options.gmail_search)
+    messages_to_estimate = []
+    #if we have a sqlcur , we'll compare messages to the db
+    #otherwise just estimate everything
+    for message_num in messages_to_process:
+      try:
+        sqlcur
+        if message_is_backed_up(message_num, sqlcur, sqlconn, options.local_folder):
+          continue
+        else:
+          messages_to_estimate.append(message_num)
+      except NameError:
+        messages_to_estimate.append(message_num)
+    estimate_count = len(messages_to_estimate)
+    total_size = float(0)
+    list_position = 0
+    messages_at_once = 10000
+    loop_count = 0
+    print 'Email: %s' % options.email
     print "Messages to estimate: %s" % estimate_count
     estimated_messages = 0
     for working_messages in batch(messages_to_estimate, messages_at_once):
@@ -911,13 +1072,14 @@ def main(argv):
     sqlconn.close()
   except NameError:
     pass
-  if options.compress > 1:
-    imapconn.display_stats()
-  imapconn.logout()
+  try:
+    imapconn.logout()
+  except UnboundLocalError: # group-restore never does imapconn
+    pass
   
 if __name__ == '__main__':
   try:
-    main(sys.argv)
+    main(sys.argv[1:])
   except KeyboardInterrupt:
     try:
       sqlconn.commit()
