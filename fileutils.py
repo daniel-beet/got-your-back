@@ -18,4 +18,3 @@ def change_file_times(fname, mtime=None, atime=None, ctime=None):
   win32file.SetFileTime(winfile, winctime, winatime, winmtime, True)
 
   winfile.close()
-
