@@ -23,7 +23,7 @@ For more information, see http://code.google.com/p/got-your-back/
 __program_name__ = 'Got Your Back: Gmail Backup'
 __author__ = 'Jay Lee'
 __email__ = 'jay@jhltechservices.com'
-__version__ = '0.17 Alpha'
+__version__ = '0.18 Alpha'
 __license__ = 'Apache License 2.0 (http://www.apache.org/licenses/LICENSE-2.0)'
 __db_schema_version__ = '6'
 __db_schema_min_version__ = '2'        #Minimum for restore
@@ -34,7 +34,6 @@ import webbrowser
 import sys
 import os
 import os.path
-import shutil
 import random
 import time
 import urllib
@@ -48,7 +47,12 @@ import shlex
 import urlparse
 from itertools import islice, chain
 import math
+import shutil
 import zipfile
+
+import pywintypes
+import win32file
+import win32con
 
 import atom.http_core
 import gdata
@@ -58,7 +62,6 @@ import gdata.auth
 import gdata.apps.service
 
 import gimaplib
-import fileutils
 
 def SetupOptionParser():
   def get_action_labels(option, opt, value, parser):
@@ -166,21 +169,14 @@ def SetupOptionParser():
     help='Sets the ''refresh-time'' action, refreshes all the email file modified times to the email date')
   return parser
 
-def getProgPath():
-  if os.path.abspath('/') != -1:
-    divider = '/'
-  else:
-    divider = '\\'
-  return os.path.dirname(os.path.realpath(sys.argv[0]))+divider
-
 def batch(iterable, size):
   sourceiter = iter(iterable)
   while True:
     batchiter = islice(sourceiter, size)
     yield chain([batchiter.next()], batchiter)
 
-def getOAuthFromConfigFile(email):
-  cfgFile = '%s%s.cfg' % (getProgPath(), email)
+def getOAuthFromConfigFile(options):
+  cfgFile =  os.path.join(options.folder, options.email + '.cfg')
   if os.path.isfile(cfgFile):
     f = open(cfgFile, 'r')
     key = f.readline()[0:-1]
@@ -190,8 +186,8 @@ def getOAuthFromConfigFile(email):
   else:
     return (False, False)
 
-def requestOAuthAccess(email, debug=False):
-  domain = email[email.find('@')+1:]
+def requestOAuthAccess(options):
+  domain = options.email[options.email.find('@')+1:]
   scopes = ['https://mail.google.com/',                        # IMAP/SMTP client access
             'https://www.googleapis.com/auth/userinfo#email']  # Email address access (verify token authorized by correct account
   s = gdata.service.GDataService()
@@ -225,7 +221,7 @@ def requestOAuthAccess(email, debug=False):
   except gdata.service.TokenUpgradeFailed:
     print 'Failed to upgrade the token. Did you grant GYB access in your browser?'
     sys.exit(4)
-  cfgFile = '%s%s.cfg' % (getProgPath(), email)
+  cfgFile = os.path.join(options.folder, options.email + '.cfg')
   f = open(cfgFile, 'w')
   f.write('%s\n%s' % (final_token.key, final_token.secret))
   f.close()
@@ -397,44 +393,36 @@ def soft_delete_message(message_num, sqlcur, sqlconn):
   sqlcur.execute("DELETE FROM flags where message_num = ?", (message_num,))
   sqlconn.commit()
 
+def change_file_times(fname, mtime=None, atime=None, ctime=None):
+  winmtime = None if mtime == None else pywintypes.Time(mtime)
+  winatime = None if atime == None else pywintypes.Time(atime)
+  winctime = None if ctime == None else pywintypes.Time(ctime)
+
+  winfile = win32file.CreateFile(
+    fname, win32con.GENERIC_WRITE,
+    win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE | win32con.FILE_SHARE_DELETE,
+    None, win32con.OPEN_EXISTING,
+    win32con.FILE_ATTRIBUTE_NORMAL, None)
+  win32file.SetFileTime(winfile, winctime, winatime, winmtime, True)
+  winfile.close()
+
 def set_message_file_date(message_full_filename, message_time):
-  message_stat_details = os.stat(message_full_filename)
-#  print message_full_filename
-#  print "  last modified: %s" % time.ctime(message_stat_details.st_mtime)
-  if message_stat_details.st_mtime != message_time:
-    os.utime(message_full_filename, (time.time(), message_time))
-    #fileutils.change_file_times(message_full_filename, message_time, time.time(), message_time)
-#    print "  updated to: %s" % time.ctime(os.stat(message_full_filename).st_mtime)
+  mtime = os.path.getmtime(message_full_filename)
+  print message_full_filename, " last modified: %s" % time.ctime(mtime)
+  if mtime != message_time:
+    #os.utime(message_full_filename, (time.time(), message_time))
+    change_file_times(message_full_filename, message_time, time.time(), message_time)
+    print "  updated to: %s" % time.ctime(os.path.getmtime(message_full_filename))
 
-def set_message_file_dates(sqlcur, backup_folder):
-  try:
-    sqlcur.execute("""SELECT count(*) FROM messages""")
-  except sqlite3.OperationalError, e:
-    if e.message == 'no such table: messages':
-      print "\n\nError: your backup database file appears to be corrupted."
-    else:
-      print "SQL error:%s" % e
-    sys.exit(8)
-  message_count = sqlcur.fetchone()[0]
-
-  try:
-    sqlcur.execute("""
-      SELECT message_filename, message_internaldate
-      FROM messages""")
-  except sqlite3.OperationalError, e:
-    if e.message == 'no such table: messages':
-      print "\n\nError: your backup database file appears to be corrupted."
-    else:
-      print "SQL error:%s" % e
-    sys.exit(8)
-
+def set_message_file_dates(backup_folder, message_details):
+  message_count = len(message_details)
   if message_count > 0:
     print "Refreshing modified timestamp on %s messages" % message_count
     message_position = 0
-    for x in sqlcur:
-      full_filename = os.path.join(backup_folder, x[0])
+    for message in message_details:
+      full_filename = os.path.join(backup_folder, message[0])
       if os.path.isfile(full_filename):
-        set_message_file_date(full_filename, time.mktime(x[1].timetuple()))
+        set_message_file_date(full_filename, time.mktime(message[1].timetuple()))
         message_position += 1
       else:
         print '\nWARNING! message file %s does not exist' % (full_filename,)
@@ -561,7 +549,7 @@ def convertDB(sqlconn, uidvalidity, oldversion):
         ''')
       sqlconn.executemany('REPLACE INTO settings (name, value) VALUES (?,?)',
                         (('uidvalidity',uidvalidity),
-                         ('db_version', __db_schema_version__)) )
+                         ('db_version', __db_schema_version__)))
       sqlconn.commit()
       print "GYB database converted to version %s" % __db_schema_version__
   except sqlite3.OperationalError, e:
@@ -574,7 +562,7 @@ def getMessageIDs (sqlconn, backup_folder):
   header_parser = email.parser.HeaderParser()
   for message_num, filename in sqlconn.execute('''
                SELECT message_num, message_filename FROM messages
-                      WHERE rfc822_msgid IS NULL'''):
+               WHERE rfc822_msgid IS NULL'''):
     message_full_filename = os.path.join(backup_folder, filename)
     if os.path.isfile(message_full_filename):
       f = open(message_full_filename, 'rb')
@@ -722,12 +710,12 @@ def main(argv):
       f.write('%s\n%s' % (key, secret))
       f.close()
   else:  # 3-Legged OAuth (End Users)
-    key, secret = getOAuthFromConfigFile(options.email)
+    key, secret = getOAuthFromConfigFile(options)
     if not key:
-      key, secret = requestOAuthAccess(options.email, options.debug)
+      key, secret = requestOAuthAccess(options)
     if not doesTokenMatchEmail(options.email, key, secret, options.debug):
       print "Error: you did not authorize the OAuth token in the browser with the %s Google Account. Please make sure you are logged in to the correct account when authorizing the token in the browser." % options.email
-      cfgFile = '%s%s.cfg' % (getProgPath(), options.email)
+      cfgFile = os.path.join(options.folder, options.email + '.cfg')
       os.remove(cfgFile)
       sys.exit(9)
 
@@ -789,6 +777,7 @@ def main(argv):
 
       if db_settings['uidvalidity'] != uidvalidity:
         print "Because of changes on the Gmail server, this folder cannot be used for incremental backups."
+        print "Run GYB with reindex action to update the unique IDs (could take a long time)."
         sys.exit(3)
 
   if options.action_labels:
@@ -809,7 +798,8 @@ def main(argv):
     messages_to_backup = []
     messages_to_refresh = []
     #Determine which messages from the search we haven't processed before.
-    print "GYB needs to examine %s messages" % len(messages_to_process)
+    messages_count = len(messages_to_process)
+    print "GYB needs to examine %s messages" % messages_count
     for message_uid in messages_to_process:
       if newDB:
         # short circuit the db and filesystem checks to save unnecessary DB and Disk IO
@@ -819,9 +809,10 @@ def main(argv):
         messages_to_refresh.append(message_uid)
       else:
         messages_to_backup.append(message_uid)
-    print "GYB already has a backup of %s messages" % (len(messages_to_process) - len(messages_to_backup))
     backup_count = len(messages_to_backup)
+    print "GYB already has a backup of %s messages" % (messages_count - backup_count)
     print "GYB needs to backup %s messages" % backup_count
+    message_nums = []
     messages_at_once = options.batch_size
     backed_up_messages = 0
     header_parser = email.parser.HeaderParser()
@@ -860,7 +851,6 @@ def main(argv):
         message_date_string = search_results.group(3)
         message_flags_string = search_results.group(4)
         message_date = imaplib.Internaldate2tuple(message_date_string)
-#        print "str: %s, date: %s" % (message_date_string, message_date)
         time_seconds_since_epoch = time.mktime(message_date)
         message_internal_datetime = datetime.datetime.fromtimestamp(time_seconds_since_epoch)
         message_flags = imaplib.ParseFlags(message_flags_string)
@@ -913,8 +903,7 @@ def main(argv):
              INSERT INTO flags (message_num, flag) VALUES (?, ?)""",
                                (message_num, flag))
 
-        set_message_file_date(message_full_filename, time_seconds_since_epoch)
-
+        message_nums.append(message_num)
         backed_up_messages += 1
 
       sqlconn.commit()
@@ -923,9 +912,26 @@ def main(argv):
       sys.stdout.flush()
     print ""
 
+    for working_messages in batch(message_nums, 100):
+      batch_messages = list(working_messages)
+      try:
+        sql = """SELECT message_filename, message_internaldate FROM messages WHERE message_num IN (?%s)""" % (',?' * (len(batch_messages) - 1),)
+        sqlcur.execute(sql, tuple(batch_messages))
+      except sqlite3.OperationalError, e:
+        if e.message == 'no such table: messages':
+          print "\n\nError: your backup database file appears to be corrupted."
+        else:
+          print "SQL error:%s" % e
+        sys.exit(8)
+
+      message_details = sqlcur.fetchall()
+      set_message_file_dates(options.folder, message_details)
+
     if options.refresh:
-      #get all messages on server, ignoring the search else we may delete more than we want to
-      messages_to_process = getMessagesToBackupList(imapconn, '')
+      #get all messages on server, unless we already have them, or else we may delete too much
+      if not options.gmail_search:
+        messages_to_process = getMessagesToBackupList(imapconn, '')
+
       backed_up_message_ids = get_backed_up_message_ids(sqlcur, sqlconn, options.folder)
       #find local messages that are not in the server set
       deleted_uids = list(set(backed_up_message_ids.iterkeys()) - set(messages_to_process))
@@ -943,10 +949,8 @@ def main(argv):
 
       messages_at_once *= 100
       for working_messages in batch(messages_to_refresh, messages_at_once):
-        found_uids = set()
-        batch_list = list(working_messages)
         #Save message content
-        batch_string = ','.join(batch_list)
+        batch_string = ','.join(working_messages)
         bad_count = 0
         while True:
           try:
@@ -976,7 +980,6 @@ def main(argv):
           search_results = re.search('X-GM-LABELS \((.*)\) UID ([0-9]*) (FLAGS \(.*\))', results)
           labels = shlex.split(search_results.group(1))
           uid = search_results.group(2)
-          found_uids.add(uid)
           message_flags_string = search_results.group(3)
           message_flags = imaplib.ParseFlags(message_flags_string)
           sqlcur.execute('DELETE FROM current_labels')
@@ -1171,7 +1174,17 @@ def main(argv):
 
   # REFRESH EML FILE TIMES #
   elif options.action == 'refresh-time':
-    set_message_file_dates(sqlcur, options.folder)
+    try:
+      sqlcur.execute("""SELECT message_filename, message_internaldate FROM messages""")
+    except sqlite3.OperationalError, e:
+      if e.message == 'no such table: messages':
+        print "\n\nError: your backup database file appears to be corrupted."
+      else:
+        print "SQL error:%s" % e
+      sys.exit(8)
+
+    message_details = sqlcur.fetchall()
+    set_message_file_dates(options.folder, message_details)
 
   try:
     sqlconn.close()
