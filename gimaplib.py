@@ -10,7 +10,7 @@ import zlib
 import gyb
 
 maxRead = 1000000
-class MySSL (imaplib.IMAP4_SSL):
+class IMAP4_SSL_DEFLATE(imaplib.IMAP4_SSL):
 
   def __init__(self, host=None, port=imaplib.IMAP4_SSL_PORT):
       self.compressor = None
@@ -35,7 +35,7 @@ class MySSL (imaplib.IMAP4_SSL):
       chunks = cStringIO.StringIO()
       read = 0
       while read < size:
-        data = self.read2(min(size-read, 16384))
+        data = self.read2(min(size - read, 16384))
         read += len(data)
         chunks.write(data)
 
@@ -84,11 +84,11 @@ class MySSL (imaplib.IMAP4_SSL):
       if self.compressor is not None:
         print "raw_in   ", self.raw_in
         print "full in  ", self.full_in
-        print "ratio = %d%%" % (100*(self.full_in-self.raw_in)/self.full_in)
+        print "ratio = %d%%" % (100 * (self.full_in - self.raw_in) / self.full_in)
         print "raw_out  ", self.raw_out
         print "full out ", self.full_out
-        print "ratio = %d%%" % (100*(self.full_out-self.raw_out)/self.full_out)
-        print "Compression efficiency: %d%%" % (100*(self.full_in+self.full_out-self.raw_in-self.raw_out)/(self.full_in+self.full_out))
+        print "ratio = %d%%" % (100 * (self.full_out - self.raw_out) / self.full_out)
+        print "Compression efficiency: %d%%" % (100 * (self.full_in + self.full_out - self.raw_in - self.raw_out) / (self.full_in + self.full_out))
 
 def GImapHasExtensions(imapconn):
   '''
@@ -126,12 +126,14 @@ def GImapSendID(imapconn, name, version, vendor, contact):
     raise GImapSendIDError('GImap Send ID failed to send ID: %s' % t)
   return shlex.split(d[0][1:-1])
 
-def ImapConnect(xoauth_string, debug, compress=False):
-  #imap_conn = imaplib.IMAP4_SSL('imap.gmail.com')
-  imap_conn = MySSL('imap.gmail.com')
+def ImapConnect(xoauth_string, debug, compress=0):
+  if compress:
+    imap_conn = IMAP4_SSL_DEFLATE('imap.gmail.com')
+  else:
+    imap_conn = imaplib.IMAP4_SSL('imap.gmail.com')
   if debug:
     imap_conn.debug = 4
-  imap_conn.authenticate('XOAUTH', lambda x: xoauth_string)
+  imap_conn.authenticate('XOAUTH2', lambda x: xoauth_string)
   if not GImapHasExtensions(imap_conn):
     print "This server does not support the Gmail IMAP Extensions."
     sys.exit(1)
@@ -196,7 +198,7 @@ def GImapSetMessageLabels(imapconn, uid, labels):
   
   Note: specified labels are added but the message's existing labels that are not specified are not removed.
   '''
-  labels_string = '"'+'" "'.join(labels)+'"'
+  labels_string = '"' + '" "'.join(labels) + '"'
   t, d = imapconn.uid('STORE', uid, '+X-GM-LABELS', labels_string)
   if t != 'OK':
     print 'GImap Set Message Labels Failed: %s' % t
@@ -215,7 +217,7 @@ def GImapGetFolder(imapconn, foldertype='\AllMail'):
   t, d = imapconn.xatom('xlist', '""', '*')
   if t != 'OK':
     raise GImapHasExtensionsError('GImap Get Folder could not check server XLIST: %s' % t)
-  xlist_data = imapconn.response('XLIST') [1]
+  xlist_data = imapconn.response('XLIST')[1]
   for line in xlist_data:
     flags, delimiter, mailbox_name = list_response_pattern.match(line).groups()
     if flags.count(foldertype) > 0:

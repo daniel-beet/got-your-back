@@ -24,12 +24,40 @@
     <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="fileutils.py" />
+    <Compile Include="apiclient\discovery.py" />
+    <Compile Include="apiclient\errors.py" />
+    <Compile Include="apiclient\ext\__init__.py" />
+    <Compile Include="apiclient\http.py" />
+    <Compile Include="apiclient\mimeparse.py" />
+    <Compile Include="apiclient\model.py" />
+    <Compile Include="apiclient\push.py" />
+    <Compile Include="apiclient\schema.py" />
+    <Compile Include="apiclient\__init__.py" />
+    <Compile Include="gflags.py" />
+    <Compile Include="gflags_validators.py" />
     <Compile Include="gimaplib.py" />
     <Compile Include="gyb-gui-setup.py" />
     <Compile Include="gyb-gui.py" />
     <Compile Include="gyb.py" />
+    <Compile Include="httplib2\iri2uri.py" />
+    <Compile Include="httplib2\socks.py" />
+    <Compile Include="httplib2\__init__.py" />
     <Compile Include="mimelib.py" />
+    <Compile Include="oauth2client\anyjson.py" />
+    <Compile Include="oauth2client\appengine.py" />
+    <Compile Include="oauth2client\client.py" />
+    <Compile Include="oauth2client\clientsecrets.py" />
+    <Compile Include="oauth2client\crypt.py" />
+    <Compile Include="oauth2client\django_orm.py" />
+    <Compile Include="oauth2client\file.py" />
+    <Compile Include="oauth2client\gce.py" />
+    <Compile Include="oauth2client\keyring_storage.py" />
+    <Compile Include="oauth2client\locked_file.py" />
+    <Compile Include="oauth2client\multistore_file.py" />
+    <Compile Include="oauth2client\tools.py" />
+    <Compile Include="oauth2client\util.py" />
+    <Compile Include="oauth2client\xsrfutil.py" />
+    <Compile Include="oauth2client\__init__.py" />
     <Compile Include="setup.py" />
     <Compile Include="atom\auth.py" />
     <Compile Include="atom\client.py" />
@@ -242,9 +270,10 @@
     <Compile Include="gdata\youtube\data.py" />
     <Compile Include="gdata\youtube\service.py" />
     <Compile Include="gdata\youtube\__init__.py" />
-    <Compile Include="ionicblue\fileutils.py" />
+    <Compile Include="uritemplate\__init__.py" />
     <Content Include="gdata\oauth\CHANGES.txt" />
     <Content Include="gyb.ico" />
+    <Content Include="httplib2\cacerts.txt" />
   </ItemGroup>
   <ItemGroup>
     <Folder Include="atom" />
@@ -294,7 +323,11 @@
     <Folder Include="gdata\tlslite\utils" />
     <Folder Include="gdata\webmastertools" />
     <Folder Include="gdata\youtube" />
-    <Folder Include="ionicblue" />
+    <Folder Include="apiclient" />
+    <Folder Include="apiclient\ext" />
+    <Folder Include="httplib2" />
+    <Folder Include="oauth2client" />
+    <Folder Include="uritemplate" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.Common.targets" />
 </Project>
