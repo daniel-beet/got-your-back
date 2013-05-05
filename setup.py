@@ -1,4 +1,4 @@
-# run uding: python -OO setup.py install
+# run using: python -OO setup.py install
 
 from distutils.core import setup
 import py2exe
