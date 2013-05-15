@@ -409,10 +409,10 @@ def set_message_file_dates(backup_folder, message_details):
             else:
                 print '\nWARNING! message file %s does not exist' % (full_filename,)
 
-            if message_position % 100:
-                restart_line()
-                sys.stdout.write("refreshed modified timestamp on %s of %s messages" % (message_position, message_count))
-                sys.stdout.flush()
+            # if message_position % 100:
+                # restart_line()
+                # sys.stdout.write("refreshed modified timestamp on %s of %s messages" % (message_position, message_count))
+                # sys.stdout.flush()
         restart_line()
         sys.stdout.write("refreshed modified timestamp on %s of %s messages" % (message_position, message_count))
         sys.stdout.flush()
