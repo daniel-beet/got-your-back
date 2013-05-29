@@ -465,7 +465,7 @@ def create_compressed_archives(backup_folder):
 
                     has_differences = len(zip_files) == 0 or len(eml_files ^ zip_files) > 0
 
-                    if has_differences:
+                    if has_differences and len(eml_files) > 0:
                         base_path = os.path.join(backup_folder_name, year, month)
                         print "Creating archive: %s.zip" % (zip_path,)
                         shutil.make_archive(zip_path, "zip", root_path, base_path)
