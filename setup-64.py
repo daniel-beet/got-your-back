@@ -9,7 +9,8 @@ setup(
   zipfile = None,
   options = {'py2exe': 
               {'optimize': 2,
-               'bundle_files': 1,
-               'dist_dir' : 'gyb'}
+               'bundle_files': 3,
+               'dist_dir' : 'gyb-64',
+               'compressed' : True}
             }
   )
