@@ -23,7 +23,7 @@ global __name__, __author__, __email__, __version__, __license__
 __program_name__ = 'Got Your Back: Gmail Backup'
 __author__ = 'Jay Lee'
 __email__ = 'jay0lee@gmail.com'
-__version__ = '0.20 Alpha'
+__version__ = '0.21 Alpha'
 __license__ = 'Apache License 2.0 (http://www.apache.org/licenses/LICENSE-2.0)'
 __db_schema_version__ = '5'
 __db_schema_min_version__ = '2'        #Minimum for restore
@@ -203,7 +203,7 @@ def generateXOAuthString(email, service_account=False, debug=False):
       credentials = storage.get()
   if credentials.access_token_expired:
     disable_ssl_certificate_validation = False
-    if os.path.isfile(getGamPath()+'noverifyssl.txt'):
+    if os.path.isfile(getProgPath()+'noverifyssl.txt'):
       disable_ssl_certificate_validation = True
     credentials.refresh(httplib2.Http(ca_certs=getProgPath()+'cacert.pem', disable_ssl_certificate_validation=disable_ssl_certificate_validation))
   return "user=%s\001auth=OAuth %s\001\001" % (email, credentials.access_token)
@@ -468,7 +468,7 @@ def main(argv):
     options.local_folder = "GYB-GMail-Backup-%s" % options.email
   if options.service_account: # Service Account OAuth
     if not os.path.isfile(getProgPath()+'privatekey.p12'):
-      print 'Error: you must have a privatekey.p12 file downloaded from the Google API Console and saved to the same path as GAM to use a service account.'
+      print 'Error: you must have a privatekey.p12 file downloaded from the Google API Console and saved to the same path as GYB to use a service account.'
       sys.exit(1)
   else:  # 3-Legged OAuth
     if options.use_admin:
@@ -664,7 +664,15 @@ def main(argv):
           imapconn.select(ALL_MAIL, readonly=True)
       for everything_else_string, full_message in (x for x in d if x != ')'):
         search_results = re.search('X-GM-LABELS \((.*)\) UID ([0-9]*) (INTERNALDATE \".*\") (FLAGS \(.*\))', everything_else_string)
-        labels = shlex.split(search_results.group(1))
+        labels_str = search_results.group(1)
+        quoted_labels = shlex.split(labels_str, posix=False)
+        labels = []
+        for label in quoted_labels:
+          if label[0] == '"' and label[-1] == '"':
+            label = label[1:-1]
+          if label[:2] == '\\\\':
+            label = label[1:]
+          labels.append(label)
         uid = search_results.group(2)
         message_date_string = search_results.group(3)
         message_flags_string = search_results.group(4)
@@ -766,7 +774,7 @@ def main(argv):
           imapconn.select(ALL_MAIL, readonly=True)
       for results in d:
         search_results = re.search('X-GM-LABELS \((.*)\) UID ([0-9]*) (FLAGS \(.*\))', results)
-        labels = shlex.split(search_results.group(1))
+        labels = shlex.split(search_results.group(1), posix=False)
         uid = search_results.group(2)
         message_flags_string = search_results.group(3)
         message_flags = imaplib.ParseFlags(message_flags_string)
@@ -828,12 +836,12 @@ def main(argv):
     for x in messages_to_restore_results:
       restart_line()
       current += 1
-      sys.stdout.write("restoring message %s of %s from %s" % (current, restore_count, x[1]))
+      message_filename = x[2]
+      sys.stdout.write("restoring message %s of %s from %s" % (current, restore_count, message_filename))
       sys.stdout.flush()
       message_num = x[0]
       message_internaldate = x[1]
       message_internaldate_seconds = time.mktime(message_internaldate.timetuple())
-      message_filename = x[2]
       if not os.path.isfile(os.path.join(options.local_folder, message_filename)):
         print 'WARNING! file %s does not exist for message %s' % (os.path.join(options.local_folder, message_filename), message_num)
         print '  this message will be skipped.'
@@ -841,6 +849,7 @@ def main(argv):
       f = open(os.path.join(options.local_folder, message_filename), 'rb')
       full_message = f.read()
       f.close()
+      full_message = full_message.replace('\x00', '') # No NULL chars
       labels_query = sqlcur.execute('SELECT DISTINCT label FROM labels WHERE message_num = ?', (message_num,))
       labels_results = sqlcur.fetchall()
       labels = []
