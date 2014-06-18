@@ -23,7 +23,7 @@ global __name__, __author__, __email__, __version__, __license__
 __program_name__ = u'Got Your Back: Gmail Backup'
 __author__ = u'Jay Lee'
 __email__ = u'jay0lee@gmail.com'
-__version__ = u'0.22'
+__version__ = u'0.23'
 __license__ = u'Apache License 2.0 (http://www.apache.org/licenses/LICENSE-2.0)'
 __db_schema_version__ = u'5'
 __db_schema_min_version__ = u'2'        #Minimum for restore
@@ -70,7 +70,7 @@ def SetupOptionParser():
   parser.add_option('--email',
     dest='email',
     help='Full email address of user or group to act against')
-  action_choices = ['backup','restore', 'restore-group', 'restore-mbox', 'count', 'purge', 'estimate', 'reindex']
+  action_choices = ['backup','restore', 'restore-group', 'restore-mbox', 'count', 'purge', 'purge-labels', 'estimate', 'reindex']
   parser.add_option('--action',
     type='choice',
     choices=action_choices,
@@ -208,6 +208,9 @@ def generateXOAuthString(email, service_account=False, debug=False):
       disable_ssl_certificate_validation = True
     credentials.refresh(httplib2.Http(ca_certs=getProgPath()+'cacert.pem', disable_ssl_certificate_validation=disable_ssl_certificate_validation))
   return "user=%s\001auth=OAuth %s\001\001" % (email, credentials.access_token)
+
+def just_quote(self, arg):
+        return '"%s"' % arg
 
 def callGAPI(service, function, soft_errors=False, throw_reasons=[], **kwargs):
   method = getattr(service, function)
@@ -360,7 +363,10 @@ def rebuildUIDTable(imapconn, sqlconn):
     for extras, header in (x for x in d if x != ')'):
       uid, message_date = re.search('UID ([0-9]*) (INTERNALDATE \".*\")', 
                                      extras).groups()
-      time_seconds = time.mktime(imaplib.Internaldate2tuple(message_date))
+      try:
+        time_seconds = time.mktime(imaplib.Internaldate2tuple(message_date))
+      except OverflowError:
+        time_seconds = time.time()
       message_internaldate = datetime.datetime.fromtimestamp(time_seconds)
       m = header_parser.parsestr(header, True)
       msgid = m.get('message-id') or '<DummyMsgID>'
@@ -510,7 +516,7 @@ def main(argv):
   newDB = (not os.path.isfile(sqldbfile)) and (options.action in ['backup', u'restore-mbox'])
   
   #If we're not doing a estimate or if the db file actually exists we open it (creates db if it doesn't exist)
-  if options.action not in ['estimate', 'count', 'purge',] or os.path.isfile(sqldbfile):
+  if options.action not in ['estimate', 'count', 'purge', 'purge-labels'] or os.path.isfile(sqldbfile):
     print "\nUsing backup folder %s" % options.local_folder
     global sqlconn
     global sqlcur
@@ -607,7 +613,10 @@ def main(argv):
         uid = search_results.group(2)
         message_date_string = search_results.group(3)
         message_flags_string = search_results.group(4)
-        message_date = imaplib.Internaldate2tuple(message_date_string)
+        try:
+          message_date = imaplib.Internaldate2tuple(message_date_string)
+        except OverflowError: # Bad internal time? Use now...
+          message_date = time.gmtime()
         time_seconds_since_epoch = time.mktime(message_date)
         message_internal_datetime = datetime.datetime.fromtimestamp(time_seconds_since_epoch)
         message_flags = imaplib.ParseFlags(message_flags_string)
@@ -811,7 +820,13 @@ def main(argv):
           if r != 'OK':
             print '\nError: %s %s' % (r,d)
             sys.exit(5)
-          restored_uid = int(re.search('^[APPENDUID [0-9]* ([0-9]*)] \(Success\)$', d[0]).group(1))
+          try:
+            restored_uid = int(re.search('^[APPENDUID [0-9]* ([0-9]*)] \(Success\)$', d[0]).group(1))
+          except AttributeError:
+            print '\nerror retrieving uid: %s: retrying...' % d
+            time.sleep(3)
+            imapconn = gimaplib.ImapConnect(generateXOAuthString(options.email, options.service_account), options.debug)
+            imapconn.select(ALL_MAIL)
           if len(labels) > 0:
             labels_string = '("'+'" "'.join(labels)+'")'
             r, d = imapconn.uid('STORE', restored_uid, '+X-GM-LABELS', labels_string)
@@ -860,6 +875,7 @@ def main(argv):
       divider = '\\'
     else:
       divider = '/'
+    created_labels = []
     for path, subdirs, files in os.walk(options.local_folder):
       for filename in files:
         if filename[-4:].lower() != u'.mbx' and filename[-5:].lower() != u'.mbox':
@@ -889,6 +905,15 @@ def main(argv):
             labels = []
           if options.label_restored:
             labels.append(options.label_restored)
+          for label in labels:
+            if label not in created_labels and label.find('/') != -1: # create parent labels
+              create_label = label
+              while True:
+                imapconn.create(create_label)
+                created_labels.append(create_label)
+                if create_label.find('/') == -1:
+                  break
+                create_label = create_label[:create_label.rfind('/')]
           flags = []
           if u'Unread' in labels:
             labels.remove(u'Unread')
@@ -1086,6 +1111,30 @@ def main(argv):
       trash_uid_string = ','.join(working_messages)
       t, d = imapconn.uid('STORE', trash_uid_string, '+FLAGS', '\Deleted')
     imapconn.expunge()
+
+  # PURGE-LABELS #
+  elif options.action == u'purge-labels':
+    pattern = options.gmail_search
+    if pattern == u'in:anywhere':
+      pattern = u'*'
+    pattern = r'%s' % pattern
+    r, existing_labels = imapconn.list(pattern=pattern)
+    for label_result in existing_labels:
+      if type(label_result) is not str:
+        continue 
+      label = re.search(u'\" \"(.*)\"$', label_result).group(1)
+      if label == u'INBOX' or label == u'Deleted' or label[:7] == u'[Gmail]':
+        continue
+
+      # ugly hacking of imaplib to keep it from overquoting/escaping
+      funcType = type(imapconn._quote)
+      imapconn._quote =  funcType(just_quote, imapconn, imapconn)
+
+      print u'Deleting label %s' % label
+      try:
+        r, d = imapconn.delete(label)
+      except imaplib.IMAP4.error, e:
+        print 'bad response: %s' % e
 
   # ESTIMATE #
   elif options.action == 'estimate':
