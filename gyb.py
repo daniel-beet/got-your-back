@@ -23,7 +23,7 @@ global __name__, __author__, __email__, __version__, __license__
 __program_name__ = u'Got Your Back: Gmail Backup'
 __author__ = u'Jay Lee'
 __email__ = u'jay0lee@gmail.com'
-__version__ = u'0.23'
+__version__ = u'0.24'
 __license__ = u'Apache License 2.0 (http://www.apache.org/licenses/LICENSE-2.0)'
 __db_schema_version__ = u'5'
 __db_schema_min_version__ = u'2'        #Minimum for restore
@@ -91,6 +91,11 @@ def SetupOptionParser():
   parser.add_option('--label-restored',
     dest='label_restored',
     help='Optional: On restore, all messages will additionally receive this label. For example, "--label_restored gyb-restored" will label all uploaded messages with a gyb-restored label.')
+  parser.add_option('--strip-labels',
+    dest='strip_labels',
+    action='store_true',
+    default=False,
+    help='Optional: On restore and restore-mbox, strip existing labels from messages except for those explicitly declared with the --label-restored parameter.')
   parser.add_option('--service-account',
     dest='service_account',
     help='Google Apps Business and Education only. Use OAuth 2.0 Service Account to authenticate.')
@@ -123,6 +128,26 @@ def SetupOptionParser():
     action='help',
     help='Display this message.')
   return parser
+
+def win32_unicode_argv():
+  from ctypes import POINTER, byref, cdll, c_int, windll
+  from ctypes.wintypes import LPCWSTR, LPWSTR
+
+  GetCommandLineW = cdll.kernel32.GetCommandLineW
+  GetCommandLineW.argtypes = []
+  GetCommandLineW.restype = LPCWSTR
+
+  CommandLineToArgvW = windll.shell32.CommandLineToArgvW
+  CommandLineToArgvW.argtypes = [LPCWSTR, POINTER(c_int)]
+  CommandLineToArgvW.restype = POINTER(LPWSTR)
+
+  cmd = GetCommandLineW()
+  argc = c_int(0)
+  argv = CommandLineToArgvW(cmd, byref(argc))
+  if argc.value > 0:
+    # Remove Python executable and commands if present
+    start = argc.value - len(sys.argv)
+    return [argv[i] for i in xrange(start, argc.value)]
 
 def getProgPath():
   if os.path.abspath('/') != -1:
@@ -164,7 +189,7 @@ found at:
 with information from the APIs Console <https://code.google.com/apis/console>.
 
 """ % (CLIENT_SECRETS)
-  FLOW = oauth2client.client.flow_from_clientsecrets(CLIENT_SECRETS, scope=scopes, message=MISSING_CLIENT_SECRETS_MESSAGE)
+  FLOW = oauth2client.client.flow_from_clientsecrets(CLIENT_SECRETS, scope=scopes, message=MISSING_CLIENT_SECRETS_MESSAGE, login_hint=email)
   cfgFile = '%s%s.cfg' % (getProgPath(), email)
   storage = oauth2client.file.Storage(cfgFile)
   credentials = storage.get()
@@ -499,12 +524,16 @@ def main(argv):
   if options.action not in ['restore-group']:
     imapconn = gimaplib.ImapConnect(generateXOAuthString(options.email, options.service_account), options.debug)
     global ALL_MAIL, TRASH, SPAM
-    ALL_MAIL = gimaplib.GImapGetFolder(imapconn)
-    TRASH = gimaplib.GImapGetFolder(imapconn, foldertype='\Trash')
-    SPAM = gimaplib.GImapGetFolder(imapconn, foldertype='\Spam')
-    if ALL_MAIL == None:
-      # Last ditched best guess but All Mail is probably hidden from IMAP...
-      ALL_MAIL = '[Gmail]/All Mail'
+    label_mappings = gimaplib.GImapGetFolders(imapconn)
+    try:
+      ALL_MAIL = label_mappings[u'\\All']
+    except KeyError:
+      print 'Error: Cannot find the Gmail "All Mail" folder. Please make sure it is not hidden from IMAP.'
+      sys.exit(3)
+    if not options.use_folder:
+      options.use_folder = ALL_MAIL
+    TRASH = label_mappings[u'\\Trash']
+    SPAM = label_mappings[u'\\Junk']
     r, d = imapconn.select(ALL_MAIL, readonly=True)
     if r == 'NO':
       print "Error: Cannot select the Gmail \"All Mail\" folder. Please make sure it is not hidden from IMAP."
@@ -547,11 +576,8 @@ def main(argv):
 
   # BACKUP #
   if options.action == 'backup':
-    if options.use_folder:
-      print 'Using folder %s' % options.use_folder
-      imapconn.select(options.use_folder, readonly=True)
-    else:
-      imapconn.select(ALL_MAIL, readonly=True)
+    print 'Using folder %s' % options.use_folder
+    imapconn.select(options.use_folder, readonly=True)
     messages_to_process = gimaplib.GImapSearch(imapconn, options.gmail_search)
     backup_path = options.local_folder
     if not os.path.isdir(backup_path):
@@ -752,10 +778,8 @@ def main(argv):
  
   # RESTORE #
   elif options.action == 'restore':
-    if options.use_folder:
-      imapconn.select(options.use_folder)
-    else:
-      imapconn.select(ALL_MAIL)  # read/write!
+    print 'using IMAP folder %s' % options.use_folder
+    imapconn.select(options.use_folder)
     resumedb = os.path.join(options.local_folder, 
                             "%s-restored.sqlite" % options.email)
     if options.noresume:
@@ -792,11 +816,12 @@ def main(argv):
       full_message = f.read()
       f.close()
       full_message = full_message.replace('\x00', '') # No NULL chars
-      labels_query = sqlcur.execute('SELECT DISTINCT label FROM labels WHERE message_num = ?', (message_num,))
-      labels_results = sqlcur.fetchall()
       labels = []
-      for l in labels_results:
-        labels.append(l[0].replace('\\','\\\\').replace('"','\\"'))
+      if not options.strip_labels:
+        labels_query = sqlcur.execute('SELECT DISTINCT label FROM labels WHERE message_num = ?', (message_num,))
+        labels_results = sqlcur.fetchall()
+        for l in labels_results:
+          labels.append(l[0].replace('\\','\\\\').replace('"','\\"'))
       if options.label_restored:
         labels.append(options.label_restored)
       for label in labels:
@@ -816,7 +841,7 @@ def main(argv):
       flags_string = ' '.join(flags)
       while True:
         try:
-          r, d = imapconn.append(ALL_MAIL, flags_string, message_internaldate_seconds, full_message)
+          r, d = imapconn.append(options.use_folder, flags_string, message_internaldate_seconds, full_message)
           if r != 'OK':
             print '\nError: %s %s' % (r,d)
             sys.exit(5)
@@ -852,10 +877,7 @@ def main(argv):
 
  # RESTORE-MBOX #
   elif options.action == 'restore-mbox':
-    if options.use_folder:
-      imapconn.select(options.use_folder)
-    else:
-      imapconn.select(ALL_MAIL)  # read/write!
+    imapconn.select(options.use_folder)
     resumedb = os.path.join(options.local_folder,
                             "%s-restored.sqlite" % options.email)
     if options.noresume:
@@ -891,7 +913,7 @@ def main(argv):
             continue
           restart_line()
           labels = message[u'X-Gmail-Labels']
-          if labels != None and labels != u'':
+          if labels != None and labels != u'' and not options.strip_labels:
             bytes, encoding = email.header.decode_header(labels)[0]
             if encoding != None:
               try:
@@ -928,6 +950,9 @@ def main(argv):
           if u'Inbox' in labels:
             labels.remove(u'Inbox')
             labels.append(u'\\\\Inbox')
+          if u'Important' in labels:
+            labels.remove(u'Important')
+            labels.append(u'\\\\Important')
           escaped_labels = []
           for label in labels:
             if label.find('\"') != -1:
@@ -947,7 +972,7 @@ def main(argv):
           full_message = message.as_string()
           while True:
             try:
-              r, d = imapconn.append(ALL_MAIL, flags_string, internal_datetime_seconds, full_message)
+              r, d = imapconn.append(options.use_folder, flags_string, internal_datetime_seconds, full_message)
               if r != 'OK':
                 print '\nError: %s %s' % (r,d)
                 sys.exit(5)
@@ -1056,11 +1081,8 @@ def main(argv):
 
   # COUNT 
   elif options.action == 'count':
-    if options.use_folder:
-      print 'Using label %s' % options.use_folder
-      imapconn.select(options.use_folder, readonly=True)
-    else:
-      imapconn.select(ALL_MAIL, readonly=True)
+    print 'Using label %s' % options.use_folder
+    imapconn.select(options.use_folder, readonly=True)
     messages_to_process = gimaplib.GImapSearch(imapconn, options.gmail_search)
     messages_to_estimate = []
     #if we have a sqlcur , we'll compare messages to the db
@@ -1083,7 +1105,8 @@ def main(argv):
 
   # PURGE #
   elif options.action == 'purge':
-    imapconn.select(ALL_MAIL, readonly=False)
+    print 'Using label %s' % options.use_folder
+    imapconn.select(options.use_folder, readonly=False)
     messages_to_process = gimaplib.GImapSearch(imapconn, options.gmail_search)
     print 'Moving %s messages from All Mail to Trash for %s' % (len(messages_to_process), options.email)
     messages_at_once = 1000
@@ -1128,7 +1151,7 @@ def main(argv):
 
       # ugly hacking of imaplib to keep it from overquoting/escaping
       funcType = type(imapconn._quote)
-      imapconn._quote =  funcType(just_quote, imapconn, imapconn)
+      imapconn._quote = funcType(just_quote, imapconn, imapconn)
 
       print u'Deleting label %s' % label
       try:
@@ -1138,10 +1161,7 @@ def main(argv):
 
   # ESTIMATE #
   elif options.action == 'estimate':
-    if options.use_folder:
-      imapconn.select(options.use_folder, readonly=True)
-    else:
-      imapconn.select(ALL_MAIL, readonly=True)
+    imapconn.select(options.use_folder, readonly=True)
     messages_to_process = gimaplib.GImapSearch(imapconn, options.gmail_search)
     messages_to_estimate = []
     #if we have a sqlcur , we'll compare messages to the db
@@ -1193,6 +1213,10 @@ def main(argv):
     pass
   
 if __name__ == '__main__':
+  reload(sys)
+  sys.setdefaultencoding(u'UTF-8')
+  if os.name == u'nt':
+    sys.argv = win32_unicode_argv() # cleanup sys.argv on Windows
   try:
     main(sys.argv[1:])
   except KeyboardInterrupt:
