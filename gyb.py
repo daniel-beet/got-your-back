@@ -23,7 +23,7 @@ global __name__, __author__, __email__, __version__, __license__
 __program_name__ = u'Got Your Back: Gmail Backup'
 __author__ = u'Jay Lee'
 __email__ = u'jay0lee@gmail.com'
-__version__ = u'0.25'
+__version__ = u'0.26'
 __license__ = u'Apache License 2.0 (http://www.apache.org/licenses/LICENSE-2.0)'
 __db_schema_version__ = u'5'
 __db_schema_min_version__ = u'2'        #Minimum for restore
@@ -202,6 +202,52 @@ with information from the APIs Console <https://code.google.com/apis/console>.
       disable_ssl_certificate_validation = True
     http = httplib2.Http(ca_certs=certFile, disable_ssl_certificate_validation=disable_ssl_certificate_validation)
     credentials = oauth2client.tools.run(FLOW, storage, short_url=True, http=http)
+
+def doGYBCheckForUpdates():
+  import urllib2, calendar
+  last_update_check_file = getProgPath()+'noupdatecheck.txt'
+  if os.path.isfile(last_update_check_file): return
+  try:
+    current_version = float(__version__)
+  except ValueError:
+    return
+  if os.path.isfile(last_update_check_file):
+    f = open(last_update_check_file, 'r')
+    last_check_time = int(f.readline())
+    f.close()
+  else:
+    last_check_time = 0
+  now_time = calendar.timegm(time.gmtime())
+  one_week_ago_time = now_time - 604800
+  if last_check_time > one_week_ago_time: return
+  try:
+    c = urllib2.urlopen(u'https://gyb-update.appspot.com/latest-version.txt?v=%s' % __version__)
+    try:
+      latest_version = float(c.read())
+    except ValueError:
+      return
+    if latest_version <= current_version:
+      f = open(last_update_check_file, 'w')
+      f.write(str(now_time))
+      f.close()
+      return
+    a = urllib2.urlopen(u'https://gyb-update.appspot.com/latest-version-announcement.txt?v=%s')
+    announcement = a.read()
+    sys.stderr.write('\nThere\'s a new version of GYB!!!\n\n')
+    sys.stderr.write(announcement)
+    visit_gyb = raw_input(u"\n\nHit Y to visit the GYB website and download the latest release. Hit Enter to just continue with this boring old version. GYB won't bother you with this announcemnt for 1 week or you can create a file named noupdatecheck.txt in the same location as gyb.py or gyb.exe and GYB won't ever check for updates: ")
+    if visit_gyb.lower() == u'y':
+      import webbrowser
+      webbrowser.open(u'http://git.io/gyb')
+      print u'GYB is now exiting so that you can overwrite this old version with the latest release'
+      sys.exit(0)
+    f = open(last_update_check_file, 'w')
+    f.write(str(now_time))
+    f.close()
+  except urllib2.HTTPError:
+    return
+  except urllib2.URLError:
+    return
 
 def generateXOAuthString(email, service_account=False, debug=False):
   if debug:
@@ -785,6 +831,8 @@ def main(argv):
     if options.noresume:
       try:
         os.remove(resumedb)
+      except OSError:
+        pass
       except IOError:
         pass
     sqlcur.execute('ATTACH ? as resume', (resumedb,))
@@ -883,6 +931,8 @@ def main(argv):
     if options.noresume:
       try:
         os.remove(resumedb)
+      except OSError:
+        pass
       except IOError:
         pass
     sqlcur.execute('ATTACH ? as mbox_resume', (resumedb,))
@@ -906,6 +956,7 @@ def main(argv):
         mbox = mailbox.mbox(file_path)
         mbox_count = len(mbox.items())
         current = 0
+        print "\nRestoring from %s" % file_path
         for message in mbox:
           current += 1
           message_marker = '%s-%s' % (file_path, current)
@@ -956,6 +1007,9 @@ def main(argv):
           if u'Drafts' in labels:
             labels.remove(u'Drafts')
             labels.append(u'\\\\Draft')
+          if u'Chat' in labels:
+            labels.remove(u'Chat')
+            labels.append(u'Restored Chats')
           escaped_labels = []
           for label in labels:
             if label.find('\"') != -1:
@@ -967,7 +1021,7 @@ def main(argv):
           flags_string = ' '.join(flags)
           msg_account, internal_datetime = message.get_from().split(' ', 1)
           internal_datetime_seconds = time.mktime(email.utils.parsedate(internal_datetime))
-          sys.stdout.write("restoring message %s of %s from %s" % (current, mbox_count, file_path))
+          sys.stdout.write(" message %s of %s" % (current, mbox_count))
           sys.stdout.flush()
           full_message = message.as_string()
           while True:
@@ -1007,6 +1061,8 @@ def main(argv):
     if options.noresume:
       try:
         os.remove(resumedb)
+      except OSError:
+        pass
       except IOError:
         pass
     sqlcur.execute('ATTACH ? as resume', (resumedb,))
@@ -1217,6 +1273,7 @@ if __name__ == '__main__':
   sys.setdefaultencoding(u'UTF-8')
   if os.name == u'nt':
     sys.argv = win32_unicode_argv() # cleanup sys.argv on Windows
+  doGYBCheckForUpdates()
   try:
     main(sys.argv[1:])
   except KeyboardInterrupt:
