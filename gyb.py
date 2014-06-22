@@ -23,7 +23,7 @@ global __name__, __author__, __email__, __version__, __license__
 __program_name__ = u'Got Your Back: Gmail Backup'
 __author__ = u'Jay Lee'
 __email__ = u'jay0lee@gmail.com'
-__version__ = u'0.24'
+__version__ = u'0.25'
 __license__ = u'Apache License 2.0 (http://www.apache.org/licenses/LICENSE-2.0)'
 __db_schema_version__ = u'5'
 __db_schema_min_version__ = u'2'        #Minimum for restore
@@ -953,15 +953,15 @@ def main(argv):
           if u'Important' in labels:
             labels.remove(u'Important')
             labels.append(u'\\\\Important')
+          if u'Drafts' in labels:
+            labels.remove(u'Drafts')
+            labels.append(u'\\\\Draft')
           escaped_labels = []
           for label in labels:
             if label.find('\"') != -1:
               escaped_labels.append(label.replace('\"', '\\"'))
             else:
               escaped_labels.append(label)
-            #if label.find('/') != -1:
-            #  labels.remove(label)
-            #  labels.append(label.replace('/', '\/'))
           del message[u'X-Gmail-Labels']
           del message[u'X-GM-THRID']
           flags_string = ' '.join(flags)
