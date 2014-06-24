@@ -23,7 +23,7 @@ global __name__, __author__, __email__, __version__, __license__
 __program_name__ = u'Got Your Back: Gmail Backup'
 __author__ = u'Jay Lee'
 __email__ = u'jay0lee@gmail.com'
-__version__ = u'0.26'
+__version__ = u'0.27'
 __license__ = u'Apache License 2.0 (http://www.apache.org/licenses/LICENSE-2.0)'
 __db_schema_version__ = u'5'
 __db_schema_min_version__ = u'2'        #Minimum for restore
@@ -70,7 +70,7 @@ def SetupOptionParser():
   parser.add_option('--email',
     dest='email',
     help='Full email address of user or group to act against')
-  action_choices = ['backup','restore', 'restore-group', 'restore-mbox', 'count', 'purge', 'purge-labels', 'estimate', 'reindex']
+  action_choices = ['backup','restore', 'restore-group', 'restore-mbox', 'count', 'purge', 'purge-labels', 'estimate', 'quota', 'reindex']
   parser.add_option('--action',
     type='choice',
     choices=action_choices,
@@ -205,8 +205,9 @@ with information from the APIs Console <https://code.google.com/apis/console>.
 
 def doGYBCheckForUpdates():
   import urllib2, calendar
-  last_update_check_file = getProgPath()+'noupdatecheck.txt'
-  if os.path.isfile(last_update_check_file): return
+  no_update_check_file = getProgPath()+'noupdatecheck.txt'
+  last_update_check_file = getProgPath()+'lastcheck.txt'
+  if os.path.isfile(no_update_check_file): return
   try:
     current_version = float(__version__)
   except ValueError:
@@ -235,7 +236,7 @@ def doGYBCheckForUpdates():
     announcement = a.read()
     sys.stderr.write('\nThere\'s a new version of GYB!!!\n\n')
     sys.stderr.write(announcement)
-    visit_gyb = raw_input(u"\n\nHit Y to visit the GYB website and download the latest release. Hit Enter to just continue with this boring old version. GYB won't bother you with this announcemnt for 1 week or you can create a file named noupdatecheck.txt in the same location as gyb.py or gyb.exe and GYB won't ever check for updates: ")
+    visit_gyb = raw_input(u"\n\nHit Y to visit the GYB website and download the latest release. Hit Enter to just continue with this boring old version. GYB won't bother you with this announcemnt for 1 week or you can create a file named %s and GYB won't ever check for updates: " % no_update_check_file)
     if visit_gyb.lower() == u'y':
       import webbrowser
       webbrowser.open(u'http://git.io/gyb')
@@ -578,8 +579,6 @@ def main(argv):
       sys.exit(3)
     if not options.use_folder:
       options.use_folder = ALL_MAIL
-    TRASH = label_mappings[u'\\Trash']
-    SPAM = label_mappings[u'\\Junk']
     r, d = imapconn.select(ALL_MAIL, readonly=True)
     if r == 'NO':
       print "Error: Cannot select the Gmail \"All Mail\" folder. Please make sure it is not hidden from IMAP."
@@ -591,30 +590,31 @@ def main(argv):
   newDB = (not os.path.isfile(sqldbfile)) and (options.action in ['backup', u'restore-mbox'])
   
   #If we're not doing a estimate or if the db file actually exists we open it (creates db if it doesn't exist)
-  if options.action not in ['estimate', 'count', 'purge', 'purge-labels'] or os.path.isfile(sqldbfile):
-    print "\nUsing backup folder %s" % options.local_folder
-    global sqlconn
-    global sqlcur
-    sqlconn = sqlite3.connect(sqldbfile, detect_types=sqlite3.PARSE_DECLTYPES)
-    sqlconn.text_factory = str
-    sqlcur = sqlconn.cursor()
-    if newDB:
-      initializeDB(sqlcur, sqlconn, options.email, uidvalidity)
-    db_settings = get_db_settings(sqlcur)
-    check_db_settings(db_settings, options.action, options.email)
-    if options.action not in ['restore', 'restore-group', u'restore-mbox']:
-      if ('uidvalidity' not in db_settings or 
-          db_settings['db_version'] <  __db_schema_version__):
-        convertDB(sqlconn, uidvalidity, db_settings['db_version'])
-        db_settings = get_db_settings(sqlcur)
-      if options.action == 'reindex':
-        getMessageIDs(sqlconn, options.local_folder)
-        rebuildUIDTable(imapconn, sqlconn)
-        sqlconn.execute('''
-            UPDATE settings SET value = ? where name = 'uidvalidity'
-        ''', ((uidvalidity),))
-        sqlconn.commit()
-        sys.exit(0)
+  if options.action not in ['count', 'purge', 'purge-labels', 'quota']:
+    if options.action not in ['estimate'] or os.path.isfile(sqldbfile):
+      print "\nUsing backup folder %s" % options.local_folder
+      global sqlconn
+      global sqlcur
+      sqlconn = sqlite3.connect(sqldbfile, detect_types=sqlite3.PARSE_DECLTYPES)
+      sqlconn.text_factory = str
+      sqlcur = sqlconn.cursor()
+      if newDB:
+        initializeDB(sqlcur, sqlconn, options.email, uidvalidity)
+      db_settings = get_db_settings(sqlcur)
+      check_db_settings(db_settings, options.action, options.email)
+      if options.action not in ['restore', 'restore-group', u'restore-mbox']:
+        if ('uidvalidity' not in db_settings or 
+            db_settings['db_version'] <  __db_schema_version__):
+          convertDB(sqlconn, uidvalidity, db_settings['db_version'])
+          db_settings = get_db_settings(sqlcur)
+        if options.action == 'reindex':
+          getMessageIDs(sqlconn, options.local_folder)
+          rebuildUIDTable(imapconn, sqlconn)
+          sqlconn.execute('''
+              UPDATE settings SET value = ? where name = 'uidvalidity'
+          ''', ((uidvalidity),))
+          sqlconn.commit()
+          sys.exit(0)
 
       if db_settings['uidvalidity'] != uidvalidity:
         print "Because of changes on the Gmail server, this folder cannot be used for incremental backups."
@@ -995,21 +995,15 @@ def main(argv):
           if u'Starred' in labels:
             flags.append(u'\Flagged')
             labels.remove(u'Starred')
-          if u'Sent' in labels:
-            labels.remove(u'Sent')
-            labels.append(u'\\\\Sent')
-          if u'Inbox' in labels:
-            labels.remove(u'Inbox')
-            labels.append(u'\\\\Inbox')
-          if u'Important' in labels:
-            labels.remove(u'Important')
-            labels.append(u'\\\\Important')
-          if u'Drafts' in labels:
-            labels.remove(u'Drafts')
-            labels.append(u'\\\\Draft')
-          if u'Chat' in labels:
-            labels.remove(u'Chat')
-            labels.append(u'Restored Chats')
+          for bad_label in [u'Sent', u'Inbox', u'Important', u'Drafts', u'Chat', u'Muted', u'Trash', u'Spam']:
+            if bad_label in labels:
+              labels.remove(bad_label)
+              if bad_label == u'Chat':
+                labels.append(u'Restored Chats')
+              elif bad_label == u'Drafts':
+                labels.append(u'\\\\Draft')
+              else:
+                labels.append(u'\\\\%s' % bad_label)
           escaped_labels = []
           for label in labels:
             if label.find('\"') != -1:
@@ -1170,6 +1164,11 @@ def main(argv):
     for working_messages in batch(messages_to_process, messages_at_once):
       uid_string = ','.join(working_messages)
       t, d = imapconn.uid('STORE', uid_string, '+X-GM-LABELS', '\\Trash')
+    try:
+      SPAM = label_mappings[u'\\Junk']
+    except KeyError:
+      print 'Error: could not select the Spam folder. Please make sure it is not hidden from IMAP.'
+      sys.exit(2)
     r, d = imapconn.select(SPAM, readonly=False)
     if r == 'NO':
       print "Error: Cannot select the Gmail \"Spam\" folder. Please make sure it is not hidden from IMAP."
@@ -1180,6 +1179,11 @@ def main(argv):
       spam_uid_string = ','.join(working_messages)
       t, d = imapconn.uid('STORE', spam_uid_string, '+FLAGS', '\Deleted')
     imapconn.expunge()
+    try:
+      TRASH = label_mappings[u'\\Trash']
+    except KeyError:
+      print 'Error: could not select the Trash folder. Please make sure it is not hidden from IMAP.'
+      sys.exit(4)
     r, d = imapconn.select(TRASH, readonly=False)
     if r == 'NO':
       print "Error: Cannot select the Gmail \"Trash\" folder. Please make sure it is not hidden from IMAP."
@@ -1215,6 +1219,38 @@ def main(argv):
       except imaplib.IMAP4.error, e:
         print 'bad response: %s' % e
 
+  # QUOTA #
+  elif options.action == 'quota':
+    result = imapconn.getquotaroot("INBOX")[1][1][0]
+    quota_used, quota_size = re.search('^".*" \(STORAGE ([0-9]*) ([0-9]*)\)$', result).groups()
+    quota_used = float(quota_used) / 1024.0
+    quota_size = float(quota_size) / 1024.0
+    used_pct = (quota_used / quota_size) * 100
+    quota_used_term = 'MB'
+    quota_size_term = 'MB'
+    if quota_size > 1024.0:
+      quota_size = quota_size / 1024.0
+      quota_size_term = 'GB'
+    if quota_size > 1024.0:
+      quota_size = quota_size / 1024.0
+      quota_size_term = 'TB'
+    if quota_size > 1024.0:
+      quota_size = quota_size / 1024.0
+      quota_size_term = 'PB'
+    if quota_used > 1024.0:
+      quota_used = quota_used / 1024.0
+      quota_used_term = 'GB'
+    if quota_used > 1024.0:
+      quota_used = quota_used / 1024.0
+      quota_used_term = 'TB'
+    if quota_used > 1024.0:
+      quota_used = quota_used / 1024.0
+      quota_used_term = 'PB'
+
+    print 'Total Google Storage: %.2f %s' % (quota_size, quota_size_term)
+    print 'Used Google Storage:  %.2f %s' % (quota_used, quota_used_term)
+    print '%.2f%%' % used_pct
+
   # ESTIMATE #
   elif options.action == 'estimate':
     imapconn.select(options.use_folder, readonly=True)
@@ -1242,23 +1278,26 @@ def main(argv):
     for working_messages in batch(messages_to_estimate, messages_at_once):
       messages_size = get_message_size(imapconn, working_messages)
       total_size = total_size + messages_size
-      if total_size > 1048576:
-        math_size = total_size/1048576
-        print_size = "%.2fM" % math_size
+      if total_size > (1024 * 1024 * 1024):
+        math_size = total_size/(1024 * 1024 * 1024)
+        print_size = "%.2f GB" % math_size
+      elif total_size > (1024 * 1024):
+        math_size = total_size / (1024 * 1024)
+        print_size = "%.2f MB" % math_size
       elif total_size > 1024:
         math_size = total_size/1024
-        print_size = "%.2fK" % math_size
+        print_size = "%.2f KB" % math_size
       else:
-        print_size = "%.2fb" % total_size
+        print_size = "%.2f bytes" % total_size
       if estimated_messages+messages_at_once < estimate_count:
         estimated_messages = estimated_messages + messages_at_once
       else:
         estimated_messages = estimate_count
       restart_line()
-      sys.stdout.write("Messages estimated: %s  Estimated size: %s" % (estimated_messages, print_size))
+      sys.stdout.write("Messages estimated: %s  Estimated size: %s          " % (estimated_messages, print_size))
       sys.stdout.flush()
       time.sleep(1)
-    print ""
+  print ""
   try:
     sqlconn.close()
   except NameError:
