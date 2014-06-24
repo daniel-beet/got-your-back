@@ -23,7 +23,7 @@ global __name__, __author__, __email__, __version__, __license__
 __program_name__ = u'Got Your Back: Gmail Backup'
 __author__ = u'Jay Lee'
 __email__ = u'jay0lee@gmail.com'
-__version__ = u'0.27'
+__version__ = u'0.28'
 __license__ = u'Apache License 2.0 (http://www.apache.org/licenses/LICENSE-2.0)'
 __db_schema_version__ = u'5'
 __db_schema_min_version__ = u'2'        #Minimum for restore
@@ -616,9 +616,9 @@ def main(argv):
           sqlconn.commit()
           sys.exit(0)
 
-      if db_settings['uidvalidity'] != uidvalidity:
-        print "Because of changes on the Gmail server, this folder cannot be used for incremental backups."
-        sys.exit(3)
+        if db_settings['uidvalidity'] != uidvalidity:
+          print "Because of changes on the Gmail server, this folder cannot be used for incremental backups."
+          sys.exit(3)
 
   # BACKUP #
   if options.action == 'backup':
