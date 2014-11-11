@@ -23,7 +23,7 @@ global __name__, __author__, __email__, __version__, __license__
 __program_name__ = u'Got Your Back: Gmail Backup'
 __author__ = u'Jay Lee'
 __email__ = u'jay0lee@gmail.com'
-__version__ = u'0.28'
+__version__ = u'0.29'
 __license__ = u'Apache License 2.0 (http://www.apache.org/licenses/LICENSE-2.0)'
 __db_schema_version__ = u'5'
 __db_schema_min_version__ = u'2'        #Minimum for restore
@@ -524,8 +524,11 @@ def get_message_size(imapconn, uids):
     exit(9)
   total_size = 0
   for x in d:
-    message_size = int(re.search('^[0-9]* \(UID [0-9]* RFC822.SIZE ([0-9]*)\)$', x).group(1))
-    total_size = total_size + message_size
+    try:
+      message_size = int(re.search('^[0-9]* \(UID [0-9]* RFC822.SIZE ([0-9]*)\)$', x).group(1))
+      total_size = total_size + message_size
+    except AttributeError:
+      pass
   return total_size
 
 def getGYBVersion(divider="\n"):
@@ -644,6 +647,7 @@ def main(argv):
     backed_up_messages = 0
     header_parser = email.parser.HeaderParser()
     for working_messages in batch(messages_to_backup, messages_at_once):
+      working_messages=list(working_messages)
       #Save message content
       batch_string = ','.join(working_messages)
       bad_count = 0
@@ -671,6 +675,8 @@ def main(argv):
           print 'socket.error:%s, retrying...' % e
           imapconn = gimaplib.ImapConnect(generateXOAuthString(options.email, options.service_account), options.debug)
           imapconn.select(ALL_MAIL, readonly=True)
+      requested_count = len(working_messages) * 2
+      d = d[:requested_count - 1] # cut off the extraneous responses for modified messages in the mailbox that we didn't request
       for everything_else_string, full_message in (x for x in d if x != ')'):
         search_results = re.search('X-GM-LABELS \((.*)\) UID ([0-9]*) (INTERNALDATE \".*\") (FLAGS \(.*\))', everything_else_string)
         labels_str = search_results.group(1)
