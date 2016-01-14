@@ -24,7 +24,7 @@ global __name__, __author__, __email__, __version__, __license__
 __program_name__ = 'Got Your Back: Gmail Backup'
 __author__ = 'Jay Lee'
 __email__ = 'jay0lee@gmail.com'
-__version__ = '0.40'
+__version__ = '0.42'
 __license__ = 'Apache License 2.0 (http://www.apache.org/licenses/LICENSE-2.0)'
 __website__ = 'http://git.io/gyb'
 __db_schema_version__ = '6'
@@ -193,11 +193,10 @@ with information from the APIs Console https://console.developers.google.com.
   if os.path.isfile(getProgPath()+'nobrowser.txt'):
     flags.noauth_local_webserver = True
   if credentials is None or credentials.invalid:
-    certFile = getProgPath()+'cacert.pem'
     disable_ssl_certificate_validation = False
     if os.path.isfile(getProgPath()+'noverifyssl.txt'):
       disable_ssl_certificate_validation = True
-    http = httplib2.Http(ca_certs=certFile,
+    http = httplib2.Http(
       disable_ssl_certificate_validation=disable_ssl_certificate_validation)
     possible_scopes = ['https://www.googleapis.com/auth/gmail.modify',
                        # Gmail modify
@@ -279,11 +278,10 @@ https://www.googleapis.com/auth/gmail.labels',
       scope=scopes, message=MISSING_CLIENT_SECRETS_MESSAGE, login_hint=auth_as)
     credentials = oauth2client.tools.run_flow(flow=FLOW, storage=storage,
       flags=flags, http=http)
-    certFile = getProgPath()+'cacert.pem'
     disable_ssl_certificate_validation = False
     if os.path.isfile(getProgPath()+'noverifyssl.txt'):
       disable_ssl_certificate_validation = True
-    http = httplib2.Http(ca_certs=certFile,
+    http = httplib2.Http(
       disable_ssl_certificate_validation=disable_ssl_certificate_validation)
 
 def doGYBCheckForUpdates():
@@ -296,7 +294,7 @@ def doGYBCheckForUpdates():
   except ValueError:
     return
   if os.path.isfile(last_update_check_file):
-    f = open(last_update_check_file, 'rb')
+    f = open(last_update_check_file, 'r')
     last_check_time = int(f.readline())
     f.close()
   else:
@@ -312,7 +310,7 @@ def doGYBCheckForUpdates():
     except ValueError:
       return
     if latest_version <= current_version:
-      f = open(last_update_check_file, 'wb')
+      f = open(last_update_check_file, 'w')
       f.write(str(now_time))
       f.close()
       return
@@ -332,7 +330,7 @@ file named %s and GYB won't ever check for updates: " % no_update_check_file)
       print('GYB is now exiting so that you can overwrite this old version \
 with the latest release')
       sys.exit(0)
-    f = open(last_update_check_file, 'wb')
+    f = open(last_update_check_file, 'w')
     f.write(str(now_time))
     f.close()
   except urllib.error.HTTPError:
@@ -374,7 +372,7 @@ def buildGAPIObject(api):
   disable_ssl_certificate_validation = False
   if os.path.isfile(getProgPath()+'noverifyssl.txt'):
     disable_ssl_certificate_validation = True
-  http = httplib2.Http(ca_certs=getProgPath()+'cacert.pem',
+  http = httplib2.Http(
     disable_ssl_certificate_validation=disable_ssl_certificate_validation)
   if options.debug:
     httplib2.debuglevel = 4
@@ -392,7 +390,7 @@ def buildGAPIObject(api):
   except googleapiclient.errors.UnknownApiNameOrVersion:
     disc_file = getProgPath()+'%s-%s.json' % (api, version)
     if os.path.isfile(disc_file):
-      f = file(disc_file, 'rb')
+      f = file(disc_file, 'r')
       discovery = f.read()
       f.close()
       return googleapiclient.discovery.build_from_document(discovery,
@@ -411,7 +409,7 @@ def buildGAPIServiceObject(api, soft_errors=False):
   oauth2servicefile = getProgPath()+'oauth2service'
   oauth2servicefilejson = '%s.json' % oauth2servicefile
   try:
-    json_string = open(oauth2servicefilejson, 'rb').read()
+    json_string = open(oauth2servicefilejson, 'r').read()
   except IOError as e:
     print('Error: %s' % e)
     print('')
@@ -430,7 +428,7 @@ estimate-users-and-restore-to-groups\n\nto setup a Service Account')
   disable_ssl_certificate_validation = False
   if os.path.isfile(getProgPath()+'noverifyssl.txt'):
     disable_ssl_certificate_validation = True
-  http = httplib2.Http(ca_certs=getProgPath()+'cacert.pem',
+  http = httplib2.Http(
     disable_ssl_certificate_validation=disable_ssl_certificate_validation)
   if options.debug:
     httplib2.debuglevel = 4
@@ -647,7 +645,7 @@ def getMessageIDs (sqlconn, backup_folder):
                       WHERE rfc822_msgid IS NULL'''):
     message_full_filename = os.path.join(backup_folder, filename)
     if os.path.isfile(message_full_filename):
-      f = open(message_full_filename, 'rb')
+      f = open(message_full_filename, 'r')
       msgid = header_parser.parse(f, True).get('message-id') or '<DummyMsgID>'
       f.close()
       sqlcur.execute(
@@ -791,6 +789,14 @@ def refresh_message(request_id, response, exception):
 
 def restored_message(request_id, response, exception):
   if exception is not None:
+    try:
+      error = simplejson.loads(exception.content.decode('utf-8'))
+      if error['error']['code'] == 400:
+        print("\nERROR: %s: %s. Skipping message restore, you can retry later with --fast-restore"
+          % (error['error']['code'], error['error']['errors'][0]['message']))
+        return
+    except:
+      pass
     raise exception
   else:
     sqlconn.execute(
@@ -1380,7 +1386,7 @@ def main(argv):
       drive = buildGAPIServiceObject('drive')
     quota_results = callGAPI(service=drive.about(), function='get',
       fields='quotaBytesTotal,quotaBytesUsedInTrash,quotaBytesUsedAggregate,qu\
-      otaBytesByService,quotaType')
+otaBytesByService,quotaType')
     for key in quota_results:
       if key == 'quotaBytesByService':
         print('Service Usage:')
@@ -1410,11 +1416,10 @@ def main(argv):
     except AttributeError:
       print('Error: Authorization doesn\'t exist')
       sys.exit(1)
-    certFile = getProgPath()+'cacert.pem'
     disable_ssl_certificate_validation = False
     if os.path.isfile(getProgPath()+'noverifyssl.txt'):
       disable_ssl_certificate_validation = True
-    http = httplib2.Http(ca_certs=certFile,
+    http = httplib2.Http(
       disable_ssl_certificate_validation=disable_ssl_certificate_validation)
     if os.path.isfile(getProgPath()+'debug.gam'):
       httplib2.debuglevel = 4
