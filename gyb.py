@@ -24,7 +24,7 @@ global __name__, __author__, __email__, __version__, __license__
 __program_name__ = 'Got Your Back: Gmail Backup'
 __author__ = 'Jay Lee'
 __email__ = 'jay0lee@gmail.com'
-__version__ = '0.42'
+__version__ = '0.43'
 __license__ = 'Apache License 2.0 (http://www.apache.org/licenses/LICENSE-2.0)'
 __website__ = 'http://git.io/gyb'
 __db_schema_version__ = '6'
@@ -1082,11 +1082,16 @@ def main(argv):
           (current, restore_count))
         media_body = googleapiclient.http.MediaInMemoryUpload(full_message,
           mimetype='message/rfc822')
-        response = callGAPI(service=restore_serv, function=restore_func,
-          userId='me', media_body=media_body, body=body,
-          deleted=options.vault, **restore_params)
+        try:
+          response = callGAPI(service=restore_serv, function=restore_func,
+            userId='me', throw_reasons=['invalidArgument',], media_body=media_body, body=body,
+            deleted=options.vault, **restore_params)
+          exception = None
+        except googleapiclient.errors.HttpError as e:
+          response = None
+          exception = e
         restored_message(request_id=str(message_num), response=response,
-          exception=None)
+          exception=exception)
         rewrite_line('restored single large message (%s/%s)' % (current,
           restore_count))
         continue
