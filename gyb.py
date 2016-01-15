@@ -24,7 +24,7 @@ global __name__, __author__, __email__, __version__, __license__
 __program_name__ = 'Got Your Back: Gmail Backup'
 __author__ = 'Jay Lee'
 __email__ = 'jay0lee@gmail.com'
-__version__ = '0.43'
+__version__ = '0.44'
 __license__ = 'Apache License 2.0 (http://www.apache.org/licenses/LICENSE-2.0)'
 __website__ = 'http://git.io/gyb'
 __db_schema_version__ = '6'
@@ -51,12 +51,6 @@ import re
 from itertools import islice, chain
 import base64
 import json
-
-try:
-  import json as simplejson
-except ImportError:
-  import simplejson
-
 import httplib2
 import oauth2client.client
 import oauth2client.file
@@ -64,6 +58,11 @@ import oauth2client.tools
 import googleapiclient
 import googleapiclient.discovery
 import googleapiclient.errors
+
+# PyOpenSSL pulls some weird hidden imports so we
+# cheat to get these pulled in by PyInstaller for Win builds
+from OpenSSL import crypto
+import cffi
 
 def SetupOptionParser(argv):
   parser = argparse.ArgumentParser(add_help=False)
@@ -459,23 +458,26 @@ Settings -->\nManage third party OAuth Client access'
       sys.exit(4)
 
 def callGAPI(service, function, soft_errors=False, throw_reasons=[], **kwargs):
-  method = getattr(service, function)
-  retries = 3
+  retries = 10
   parameters = kwargs.copy()
   parameters.update(extra_args)
+  if function:
+    method = getattr(service, function)(**parameters)
+  else:
+    method = service
   for n in range(1, retries+1):
     try:
-      return method(**parameters).execute()
+      return method.execute()
     except googleapiclient.errors.HttpError as e:
-      error = simplejson.loads(e.content.decode('utf-8'))
+      error = json.loads(e.content.decode('utf-8'))
       try:
         reason = error['error']['errors'][0]['reason']
         http_status = error['error']['code']
         message = error['error']['errors'][0]['message']
         if reason in throw_reasons:
           raise
-        if n != retries and reason in ['rateLimitExceeded',
-          'userRateLimitExceeded', 'backendError']:
+        if n != retries and (http_status >= 500 or
+         reason in ['rateLimitExceeded', 'userRateLimitExceeded', 'backendError']):
           wait_on_fail = (2 ** n) if (2 ** n) < 60 else 60
           randomness = float(random.randint(1,1000)) / 1000
           wait_on_fail = wait_on_fail + randomness
@@ -790,7 +792,7 @@ def refresh_message(request_id, response, exception):
 def restored_message(request_id, response, exception):
   if exception is not None:
     try:
-      error = simplejson.loads(exception.content.decode('utf-8'))
+      error = json.loads(exception.content.decode('utf-8'))
       if error['error']['code'] == 400:
         print("\nERROR: %s: %s. Skipping message restore, you can retry later with --fast-restore"
           % (error['error']['code'], error['error']['errors'][0]['message']))
@@ -968,13 +970,13 @@ def main(argv):
         callback=backup_message)
       backed_up_messages += 1
       if len(gbatch._order) == options.batch_size:
-        gbatch.execute()
+        callGAPI(gbatch, None)
         gbatch = googleapiclient.http.BatchHttpRequest()
         sqlconn.commit()
         rewrite_line("backed up %s of %s messages" %
           (backed_up_messages, backup_count))
     if len(gbatch._order) > 0:
-      gbatch.execute()
+      callGAPI(gbatch, None)
       sqlconn.commit()
       rewrite_line("backed up %s of %s messages" %
         (backed_up_messages, backup_count))
@@ -996,13 +998,13 @@ def main(argv):
         callback=refresh_message)
       refreshed_messages += 1
       if len(gbatch._order) == options.batch_size:
-        gbatch.execute()
+        callGAPI(gbatch, None)
         gbatch = googleapiclient.http.BatchHttpRequest()
         sqlconn.commit()
         rewrite_line("refreshed %s of %s messages" %
           (refreshed_messages, refresh_count))
     if len(gbatch._order) > 0:
-      gbatch.execute()
+      callGAPI(gbatch, None)
       sqlconn.commit()
       rewrite_line("refreshed %s of %s messages" %
         (refreshed_messages, refresh_count))
@@ -1062,7 +1064,6 @@ def main(argv):
       f = open(os.path.join(options.local_folder, message_filename), 'rb')
       full_message = f.read()
       f.close()
-      #full_message = full_message.replace('\x00', '') # No NULL chars
       labels = []
       if not options.strip_labels:
         sqlcur.execute('SELECT DISTINCT label FROM labels WHERE message_num \
@@ -1080,8 +1081,11 @@ def main(argv):
         # don't batch/raw >1mb messages, just do single
         rewrite_line('restoring single large message (%s/%s)' %
           (current, restore_count))
+        # Note resumable=True is important here, it prevents errors on (bad)
+        # messages that should be ASCII but contain extended chars.
+        # What's that? No, no idea why
         media_body = googleapiclient.http.MediaInMemoryUpload(full_message,
-          mimetype='message/rfc822')
+          mimetype='message/rfc822', resumable=True)
         try:
           response = callGAPI(service=restore_serv, function=restore_func,
             userId='me', throw_reasons=['invalidArgument',], media_body=media_body, body=body,
@@ -1106,7 +1110,7 @@ def main(argv):
         # this message would put us over max, execute current batch first
         rewrite_line("restoring %s messages (%s/%s)" % (len(gbatch._order),
           current, restore_count))
-        gbatch.execute()
+        callGAPI(gbatch, None)
         gbatch = googleapiclient.http.BatchHttpRequest()
         sqlconn.commit()
         rewrite_line("restored %s messages (%s/%s)" % (len(gbatch._order),
@@ -1120,7 +1124,7 @@ def main(argv):
       if len(gbatch._order) == options.batch_size:
         rewrite_line("restoring %s messages (%s/%s)" % (len(gbatch._order),
           current, restore_count))
-        gbatch.execute()
+        callGAPI(gbatch, None)
         gbatch = googleapiclient.http.BatchHttpRequest()
         sqlconn.commit()
         rewrite_line("restored %s messages (%s/%s)" % (len(gbatch._order),
@@ -1130,7 +1134,7 @@ def main(argv):
     if len(gbatch._order) > 0:
       rewrite_line("restoring %s messages (%s/%s)" % (len(gbatch._order),
         current, restore_count))
-      gbatch.execute()
+      callGAPI(gbatch, None)
       sqlconn.commit()
       rewrite_line("restored %s messages (%s/%s)" % (len(gbatch._order),
         current, restore_count))
@@ -1237,7 +1241,7 @@ def main(argv):
             # this message would put us over max, execute current batch first
             rewrite_line("restoring %s messages (%s/%s)" %
               (len(gbatch._order), current, restore_count))
-            gbatch.execute()
+            callGAPI(gbatch, None)
             gbatch = googleapiclient.http.BatchHttpRequest()
             sqlconn.commit()
             rewrite_line("restored %s messages (%s/%s)" %
@@ -1252,7 +1256,7 @@ def main(argv):
           if len(gbatch._order) == options.batch_size:
             rewrite_line("restoring %s messages (%s/%s)" %
               (len(gbatch._order), current, restore_count))
-            gbatch.execute()
+            callGAPI(gbatch, None)
             gbatch = googleapiclient.http.BatchHttpRequest()
             sqlconn.commit()
             rewrite_line("restored %s messages (%s/%s)" %
@@ -1262,7 +1266,7 @@ def main(argv):
         if len(gbatch._order) > 0:
           rewrite_line("restoring %s messages (%s/%s)" %
             (len(gbatch._order), current, restore_count))
-          gbatch.execute()
+          callGAPI(gbatch, None)
           sqlconn.commit()
           rewrite_line("restoring %s messages (%s/%s)" %
             (len(gbatch._order), current, restore_count))
@@ -1357,12 +1361,12 @@ def main(argv):
         id=a_message['id']), callback=purged_message)
       purged_messages += 1
       if len(gbatch._order) == options.batch_size:
-        gbatch.execute()
+        callGAPI(gbatch, None)
         gbatch = googleapiclient.http.BatchHttpRequest()
         rewrite_line("purged %s of %s messages" %
           (purged_messages, purge_count))
     if len(gbatch._order) > 0:
-      gbatch.execute()
+      callGAPI(gbatch, None)
       rewrite_line("purged %s of %s messages" % (purged_messages, purge_count))
     print("\n")
 
@@ -1461,7 +1465,7 @@ otaBytesByService,quotaType')
     #Determine which messages from the search we haven't processed before.
     print("GYB needs to examine %s messages" % len(messages_to_process))
     for message_num in messages_to_process:
-      if not newDB and message_is_backed_up(message_num['id'], sqlcur,
+      if not newDB and os.path.isfile(sqldbfile) and message_is_backed_up(message_num['id'], sqlcur,
         sqlconn, options.local_folder):
         pass
       else:
@@ -1481,15 +1485,13 @@ otaBytesByService,quotaType')
         callback=estimate_message)
       estimated_messages += 1
       if len(gbatch._order) == options.batch_size:
-        gbatch.execute()
+        callGAPI(gbatch, None)
         gbatch = googleapiclient.http.BatchHttpRequest()
-        sqlconn.commit()
         rewrite_line("Estimated size %s %s/%s messages" %
           (bytes_to_larger(message_size_estimate), estimated_messages,
           estimate_count))
     if len(gbatch._order) > 0:
-      gbatch.execute()
-      sqlconn.commit()
+      callGAPI(gbatch, None)
       rewrite_line("Estimated size %s %s/%s messages" %
         (bytes_to_larger(message_size_estimate), estimated_messages,
         estimate_count))
