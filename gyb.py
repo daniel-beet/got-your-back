@@ -24,16 +24,18 @@ global __name__, __author__, __email__, __version__, __license__
 __program_name__ = 'Got Your Back: Gmail Backup'
 __author__ = 'Jay Lee'
 __email__ = 'jay0lee@gmail.com'
-__version__ = '0.44'
+__version__ = '0.45'
 __license__ = 'Apache License 2.0 (http://www.apache.org/licenses/LICENSE-2.0)'
 __website__ = 'http://git.io/gyb'
 __db_schema_version__ = '6'
 __db_schema_min_version__ = '6'        #Minimum for restore
 
-global extra_args, options, allLabelIds, allLabels, gmail
+global extra_args, options, allLabelIds, allLabels, gmail, chunksize
 extra_args = {'prettyPrint': False}
 allLabelIds = dict()
 allLabels = dict()
+chunksize = 1024 * 1024 * 30
+reserved_labels = ['chat', 'chats', 'migrated', 'todo', 'todos', 'buzz', 'bin', 'allmail']
 
 import argparse
 import sys
@@ -46,6 +48,7 @@ import platform
 import datetime
 import sqlite3
 import email
+import hashlib
 import mailbox
 import re
 from itertools import islice, chain
@@ -54,6 +57,7 @@ import json
 import httplib2
 import oauth2client.client
 import oauth2client.file
+from oauth2client.service_account import ServiceAccountCredentials
 import oauth2client.tools
 import googleapiclient
 import googleapiclient.discovery
@@ -61,8 +65,8 @@ import googleapiclient.errors
 
 # PyOpenSSL pulls some weird hidden imports so we
 # cheat to get these pulled in by PyInstaller for Win builds
-from OpenSSL import crypto
-import cffi
+# from OpenSSL import crypto
+# import cffi
 
 def SetupOptionParser(argv):
   parser = argparse.ArgumentParser(add_help=False)
@@ -124,7 +128,7 @@ Account to authenticate.')
     type=int,
     choices=list(range(1,101)),
     default=0, # default of 0 means use per action default
-    help='Optional: Sets the number of batch operations to perform at once.')
+    help='Optional: Sets the number of operations to perform at once.')
   parser.add_argument('--noresume', 
     action='store_true',
     help='Optional: On restores, start from beginning. Default is to resume \
@@ -385,7 +389,7 @@ def buildGAPIObject(api):
   http = credentials.authorize(http)
   version = getAPIVer(api)
   try:
-    return googleapiclient.discovery.build(api, version, http=http)
+    return googleapiclient.discovery.build(api, version, http=http, cache_discovery=False)
   except googleapiclient.errors.UnknownApiNameOrVersion:
     disc_file = getProgPath()+'%s-%s.json' % (api, version)
     if os.path.isfile(disc_file):
@@ -405,24 +409,11 @@ def buildGAPIServiceObject(api, soft_errors=False):
     auth_as = options.use_admin
   else:
     auth_as = options.email
-  oauth2servicefile = getProgPath()+'oauth2service'
-  oauth2servicefilejson = '%s.json' % oauth2servicefile
-  try:
-    json_string = open(oauth2servicefilejson, 'r').read()
-  except IOError as e:
-    print('Error: %s' % e)
-    print('')
-    print('Please follow the instructions at:\n\nhttps://github.com/jay0lee/go\
-t-your-back/wiki#google-apps-business-and-education-admins-backup-restore-and-\
-estimate-users-and-restore-to-groups\n\nto setup a Service Account')
-    sys.exit(6)
-  json_data = json.loads(json_string)
-  SERVICE_ACCOUNT_EMAIL = json_data['client_email']
-  SERVICE_ACCOUNT_CLIENT_ID = json_data['client_id']
-  key = json_data['private_key'].encode('utf-8')
-  scope = getAPIScope(api)
-  credentials = oauth2client.client.SignedJwtAssertionCredentials(
-    SERVICE_ACCOUNT_EMAIL, key, scope=scope, sub=auth_as)
+  oauth2servicefilejson = getProgPath()+'oauth2service.json'
+  scopes = getAPIScope(api)
+  credentials = ServiceAccountCredentials.from_json_keyfile_name(
+    oauth2servicefilejson, scopes)
+  credentials = credentials.create_delegated(auth_as)
   credentials.user_agent = getGYBVersion(' | ')
   disable_ssl_certificate_validation = False
   if os.path.isfile(getProgPath()+'noverifyssl.txt'):
@@ -441,7 +432,7 @@ estimate-users-and-restore-to-groups\n\nto setup a Service Account')
   http = credentials.authorize(http)
   version = getAPIVer(api)
   try:
-    return googleapiclient.discovery.build(api, version, http=http)
+    return googleapiclient.discovery.build(api, version, http=http, cache_discovery=False)
   except oauth2client.client.AccessTokenRefreshError as e:
     if e.message in ['access_denied', 'unauthorized_client: Unauthorized \
 client or scope in request.']:
@@ -461,42 +452,43 @@ def callGAPI(service, function, soft_errors=False, throw_reasons=[], **kwargs):
   retries = 10
   parameters = kwargs.copy()
   parameters.update(extra_args)
-  if function:
-    method = getattr(service, function)(**parameters)
-  else:
-    method = service
   for n in range(1, retries+1):
+    if function:
+      method = getattr(service, function)(**parameters)
+    else:
+      method = service
     try:
       return method.execute()
     except googleapiclient.errors.HttpError as e:
-      error = json.loads(e.content.decode('utf-8'))
       try:
+        error = json.loads(e.content.decode('utf-8'))
         reason = error['error']['errors'][0]['reason']
         http_status = error['error']['code']
         message = error['error']['errors'][0]['message']
-        if reason in throw_reasons:
-          raise
-        if n != retries and (http_status >= 500 or
-         reason in ['rateLimitExceeded', 'userRateLimitExceeded', 'backendError']):
-          wait_on_fail = (2 ** n) if (2 ** n) < 60 else 60
-          randomness = float(random.randint(1,1000)) / 1000
-          wait_on_fail = wait_on_fail + randomness
-          if n > 3:
-            sys.stderr.write('\nTemp error %s. Backing off %s seconds...'
-              % (reason, int(wait_on_fail)))
-          time.sleep(wait_on_fail)
-          if n > 3:
-            sys.stderr.write('attempt %s/%s\n' % (n+1, retries))
-          continue
-        sys.stderr.write('\n%s: %s - %s\n' % (http_status, message, reason))
-        if soft_errors:
-          sys.stderr.write(' - Giving up.\n')
-          return
-        else:
-          sys.exit(int(http_status))
-      except KeyError:
-        sys.stderr.write('Unknown Error: %s' % e)
-        sys.exit(1)
+      except (KeyError, json.decoder.JSONDecodeError):
+        http_status = int(e.resp['status'])
+        reason = e.content
+        message = e.content
+      if reason in throw_reasons:
+        raise
+      if n != retries and (http_status >= 500 or
+       reason in ['rateLimitExceeded', 'userRateLimitExceeded', 'backendError']):
+        wait_on_fail = (2 ** n) if (2 ** n) < 60 else 60
+        randomness = float(random.randint(1,1000)) / 1000
+        wait_on_fail += randomness
+        if n > 3:
+          sys.stderr.write('\nTemp error %s. Backing off %s seconds...'
+            % (reason, int(wait_on_fail)))
+        time.sleep(wait_on_fail)
+        if n > 3:
+          sys.stderr.write('attempt %s/%s\n' % (n+1, retries))
+        continue
+      sys.stderr.write('\n%s: %s - %s\n' % (http_status, message, reason))
+      if soft_errors:
+        sys.stderr.write(' - Giving up.\n')
+        return
+      else:
+        sys.exit(int(http_status))
     except oauth2client.client.AccessTokenRefreshError as e:
       sys.stderr.write('Error: Authentication Token Error - %s' % e)
       sys.exit(403)
@@ -658,6 +650,17 @@ def getMessageIDs (sqlconn, backup_folder):
 def rebuildUIDTable(sqlconn):
   pass
 
+suffixes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
+def humansize(file_path):
+  nbytes = os.stat(file_path).st_size
+  if nbytes == 0: return '0 B'
+  i = 0
+  while nbytes >= 1024 and i < len(suffixes)-1:
+    nbytes /= 1024.
+    i += 1
+  f = ('%.2f' % nbytes).rstrip('0').rstrip('.')
+  return '%s%s' % (f, suffixes[i])
+
 def doesTokenMatchEmail():
   if options.use_admin:
     auth_as = options.use_admin
@@ -743,8 +746,9 @@ def labelsToLabelIds(labels):
         allLabels[a_label['name']] = a_label['id']
   labelIds = list()
   for label in labels:
-    if label == 'CHAT':
-      label = 'Chat-Restored'
+    base_label = label.split('/')[0].lower()
+    if base_label in reserved_labels:
+      label = '_%s' % (label)
     if label not in allLabels:
       # create new label (or get it's id if it exists)
       label_results = callGAPI(service=gmail.users().labels(), function='create',
@@ -1077,7 +1081,7 @@ def main(argv):
       labelIds = labelsToLabelIds(labels)
       body = {'labelIds': labelIds}
       b64_message_size = (len(full_message)/3) * 4
-      if b64_message_size > 1 * 1024 * 1024:
+      if b64_message_size > 1 * 1024 * 1024 or options.batch_size == 1:
         # don't batch/raw >1mb messages, just do single
         rewrite_line('restoring single large message (%s/%s)' %
           (current, restore_count))
@@ -1085,7 +1089,7 @@ def main(argv):
         # messages that should be ASCII but contain extended chars.
         # What's that? No, no idea why
         media_body = googleapiclient.http.MediaInMemoryUpload(full_message,
-          mimetype='message/rfc822', resumable=True)
+          mimetype='message/rfc822', resumable=True, chunksize=chunksize)
         try:
           response = callGAPI(service=restore_serv, function=restore_func,
             userId='me', throw_reasons=['invalidArgument',], media_body=media_body, body=body,
@@ -1113,8 +1117,6 @@ def main(argv):
         callGAPI(gbatch, None)
         gbatch = googleapiclient.http.BatchHttpRequest()
         sqlconn.commit()
-        rewrite_line("restored %s messages (%s/%s)" % (len(gbatch._order),
-          current, restore_count))
         current_batch_bytes = 5000
         largest_in_batch = 0
       gbatch.add(restore_method(userId='me',
@@ -1127,8 +1129,6 @@ def main(argv):
         callGAPI(gbatch, None)
         gbatch = googleapiclient.http.BatchHttpRequest()
         sqlconn.commit()
-        rewrite_line("restored %s messages (%s/%s)" % (len(gbatch._order),
-          current, restore_count))
         current_batch_bytes = 5000
         largest_in_batch = 0
     if len(gbatch._order) > 0:
@@ -1136,8 +1136,6 @@ def main(argv):
         current, restore_count))
       callGAPI(gbatch, None)
       sqlconn.commit()
-      rewrite_line("restored %s messages (%s/%s)" % (len(gbatch._order),
-        current, restore_count))
     print("\n")
     sqlconn.execute('DETACH resume')
     sqlconn.commit()
@@ -1185,14 +1183,17 @@ def main(argv):
           filename[-5:].lower() != '.mbox':
           continue
         file_path = '%s%s%s' % (path, divider, filename)
+        print("\nRestoring from %s file %s..." % (humansize(file_path), file_path))
+        print("large files may take some time to open.")
         mbox = mailbox.mbox(file_path)
         restore_count = len(list(mbox.items()))
         current = 0
-        print("\nRestoring from %s" % file_path)
         for message in mbox:
           current += 1
           message_marker = '%s-%s' % (file_path, current)
-          if message_marker in messages_to_skip:
+          # shorten request_id to prevent content-id errors
+          request_id = hashlib.md5(message_marker.encode('utf-8')).hexdigest()[:25]
+          if request_id in messages_to_skip:
             continue
           restart_line()
           labels = message['X-Gmail-Labels']
@@ -1215,7 +1216,7 @@ def main(argv):
           del message['X-Gmail-Labels']
           del message['X-GM-THRID']
           rewrite_line(" message %s of %s" % (current, restore_count))
-          full_message = message.as_string()
+          full_message = message.as_bytes()
           body = {'labelIds': labelIds}
           b64_message_size = (len(full_message)/3) * 4
           if b64_message_size > 1 * 1024 * 1024:
@@ -1223,16 +1224,21 @@ def main(argv):
             rewrite_line(' restoring single large message (%s/%s)' %
               (current, restore_count))
             media_body = googleapiclient.http.MediaInMemoryUpload(full_message,
-              mimetype='message/rfc822')
-            response = callGAPI(service=restore_serv, function=restore_func,
-              userId='me', media_body=media_body, body=body,
-              deleted=options.vault, **restore_params)
-            restored_message(request_id=str(message_marker), response=response,
+              mimetype='message/rfc822', resumable=True, chunksize=chunksize)
+            try:
+              response = callGAPI(service=restore_serv, function=restore_func,
+                userId='me', throw_reasons=['invalidArgument',], media_body=media_body, body=body,
+                deleted=options.vault, **restore_params)
+              exception = None
+            except googleapiclient.errors.HttpError as e:
+              response = None
+              exception = e
+            restored_message(request_id=request_id, response=response,
               exception=None)
             rewrite_line(' restored single large message (%s/%s)' %
               (current, restore_count))
             continue
-          raw_message = base64.urlsafe_b64encode(full_message)
+          raw_message = base64.urlsafe_b64encode(full_message).decode('utf-8')
           body['raw'] = raw_message
           current_batch_bytes += len(raw_message)
           for labelId in labelIds:
@@ -1244,23 +1250,19 @@ def main(argv):
             callGAPI(gbatch, None)
             gbatch = googleapiclient.http.BatchHttpRequest()
             sqlconn.commit()
-            rewrite_line("restored %s messages (%s/%s)" %
-              (len(gbatch._order), current, restore_count))
             current_batch_bytes = 5000
             largest_in_batch = 0
           gbatch.add(restore_method(userId='me',
             body=body, fields='id',
             deleted=options.vault, **restore_params),
             callback=restored_message,
-            request_id=str(message_marker))
+            request_id=request_id)
           if len(gbatch._order) == options.batch_size:
             rewrite_line("restoring %s messages (%s/%s)" %
               (len(gbatch._order), current, restore_count))
             callGAPI(gbatch, None)
             gbatch = googleapiclient.http.BatchHttpRequest()
             sqlconn.commit()
-            rewrite_line("restored %s messages (%s/%s)" %
-              (len(gbatch._order), current, restore_count))
             current_batch_bytes = 5000
             largest_in_batch = 0
         if len(gbatch._order) > 0:
@@ -1268,8 +1270,6 @@ def main(argv):
             (len(gbatch._order), current, restore_count))
           callGAPI(gbatch, None)
           sqlconn.commit()
-          rewrite_line("restoring %s messages (%s/%s)" %
-            (len(gbatch._order), current, restore_count))
     sqlconn.execute('DETACH mbox_resume')
     sqlconn.commit()
 
@@ -1318,7 +1318,7 @@ def main(argv):
       f.close()
       media = googleapiclient.http.MediaFileUpload(
         os.path.join(options.local_folder, message_filename),
-        mimetype='message/rfc822')
+        mimetype='message/rfc822', resumable=True, chunksize=chunksize)
       try:
         callGAPI(service=gmig.archive(), function='insert',
           groupId=options.email, media_body=media)
