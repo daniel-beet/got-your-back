@@ -24,7 +24,7 @@ global __name__, __author__, __email__, __version__, __license__
 __program_name__ = 'Got Your Back: Gmail Backup'
 __author__ = 'Jay Lee'
 __email__ = 'jay0lee@gmail.com'
-__version__ = '0.46'
+__version__ = '0.47'
 __license__ = 'Apache License 2.0 (http://www.apache.org/licenses/LICENSE-2.0)'
 __website__ = 'http://git.io/gyb'
 __db_schema_version__ = '6'
@@ -317,7 +317,7 @@ def doGYBCheckForUpdates():
     announceUrl = 'https://gyb-update.appspot.com/\
 latest-version-announcement.txt?v=%s'
     a = urllib.request.urlopen(announceUrl % (__version__,))
-    announcement = a.read()
+    announcement = a.read().decode("utf-8")
     sys.stderr.write('\nThere\'s a new version of GYB!!!\n\n')
     sys.stderr.write(announcement)
     visit_gyb = input("\n\nHit Y to visit the GYB website and download \
