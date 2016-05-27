@@ -24,7 +24,7 @@ global __name__, __author__, __email__, __version__, __license__
 __program_name__ = 'Got Your Back: Gmail Backup'
 __author__ = 'Jay Lee'
 __email__ = 'jay0lee@gmail.com'
-__version__ = '0.45'
+__version__ = '0.46'
 __license__ = 'Apache License 2.0 (http://www.apache.org/licenses/LICENSE-2.0)'
 __website__ = 'http://git.io/gyb'
 __db_schema_version__ = '6'
@@ -35,7 +35,9 @@ extra_args = {'prettyPrint': False}
 allLabelIds = dict()
 allLabels = dict()
 chunksize = 1024 * 1024 * 30
-reserved_labels = ['chat', 'chats', 'migrated', 'todo', 'todos', 'buzz', 'bin', 'allmail']
+reserved_labels = ['inbox', 'spam', 'trash', 'unread', 'starred', 'important',
+  'sent', 'draft', 'chat', 'chats', 'migrated', 'todo', 'todos', 'buzz',
+  'bin', 'allmail', 'drafts']
 
 import argparse
 import sys
@@ -63,11 +65,6 @@ import googleapiclient
 import googleapiclient.discovery
 import googleapiclient.errors
 
-# PyOpenSSL pulls some weird hidden imports so we
-# cheat to get these pulled in by PyInstaller for Win builds
-# from OpenSSL import crypto
-# import cffi
-
 def SetupOptionParser(argv):
   parser = argparse.ArgumentParser(add_help=False)
   #parser.usage = parser.print_help()
@@ -83,7 +80,7 @@ def SetupOptionParser(argv):
     help='Action to perform. Default is backup.')
   parser.add_argument('--search',
     dest='gmail_search',
-    default=None,
+    default='-is:chat',
     help='Optional: On backup, estimate, count and purge, Gmail search to \
 scope operation against')
   parser.add_argument('--local-folder',
@@ -223,7 +220,7 @@ https://www.googleapis.com/auth/gmail.labels',
                        'https://www.googleapis.com/auth/drive.appdata']
                        # Drive app config (used for quota)
 
-    selected_scopes = ['*', ' ', ' ', ' ', ' ', ' ', '*']
+    selected_scopes = [' ', ' ', ' ', '*', ' ', '*', '*']
     menu = '''Select the actions you wish GYB to be able to perform for %s
 
 [%s]  0)  Gmail Backup And Restore - read/write mailbox access
@@ -325,7 +322,7 @@ latest-version-announcement.txt?v=%s'
     sys.stderr.write(announcement)
     visit_gyb = input("\n\nHit Y to visit the GYB website and download \
 the latest release. Hit Enter to just continue with this boring old version.\
- GYB won't bother you with this announcemnt for 1 week or you can create a \
+ GYB won't bother you with this announcement for 1 week or you can create a \
 file named %s and GYB won't ever check for updates: " % no_update_check_file)
     if visit_gyb.lower() == 'y':
       import webbrowser
@@ -434,13 +431,15 @@ def buildGAPIServiceObject(api, soft_errors=False):
   try:
     return googleapiclient.discovery.build(api, version, http=http, cache_discovery=False)
   except oauth2client.client.AccessTokenRefreshError as e:
-    if e.message in ['access_denied', 'unauthorized_client: Unauthorized \
-client or scope in request.']:
+    message = e.args[0]
+    if message in ['access_denied',
+                   'unauthorized_client: Unauthorized client or scope in request.',
+                   'access_denied: Requested client not authorized.']:
       print('Error: Access Denied. Please make sure the Client Name:\
 \n\n%s\n\nis authorized for the API Scope(s):\n\n%s\n\nThis can be \
 configured in your Control Panel under:\n\nSecurity -->\nAdvanced \
 Settings -->\nManage third party OAuth Client access'
-% (SERVICE_ACCOUNT_CLIENT_ID, ','.join(scope)))
+% (credentials.client_id, ','.join(scopes)))
       sys.exit(5)
     else:
       print('Error: %s' % e)
@@ -678,18 +677,9 @@ when authorizing the token in the browser." % auth_as)
   os.remove(cfgFile)
   return False
 
-def restart_line():
-  sys.stdout.write('\r')
-  sys.stdout.flush()
-
 def rewrite_line(mystring):
-  sys.stdout.write('\r')
-  sys.stdout.flush()
-  padding_length = 80 - len(mystring)
-  padding = ' ' * padding_length
-  sys.stdout.write(mystring)
-  sys.stdout.write(padding)
-  sys.stdout.flush()
+  print(' ' * 80, end='\r')
+  print(mystring, end='\r')
 
 def initializeDB(sqlcur, sqlconn, email):
   sqlcur.executescript('''
@@ -746,8 +736,8 @@ def labelsToLabelIds(labels):
         allLabels[a_label['name']] = a_label['id']
   labelIds = list()
   for label in labels:
-    base_label = label.split('/')[0].lower()
-    if base_label in reserved_labels:
+    base_label = label.split('/')[0]
+    if base_label in reserved_labels and base_label not in allLabels.keys():
       label = '_%s' % (label)
     if label not in allLabels:
       # create new label (or get it's id if it exists)
@@ -829,6 +819,8 @@ def backup_message(request_id, response, exception):
       labelIds = response['labelIds']
     else:
       labelIds = list()
+    if 'CHATS' in labelIds: # skip CHATS
+      return
     labels = labelIdsToLabels(labelIds)
     message_file_name = "%s.eml" % (response['id'])
     message_time = int(response['internalDate'])/1000
@@ -974,13 +966,13 @@ def main(argv):
         callback=backup_message)
       backed_up_messages += 1
       if len(gbatch._order) == options.batch_size:
-        callGAPI(gbatch, None)
+        callGAPI(gbatch, None, soft_errors=True)
         gbatch = googleapiclient.http.BatchHttpRequest()
         sqlconn.commit()
         rewrite_line("backed up %s of %s messages" %
           (backed_up_messages, backup_count))
     if len(gbatch._order) > 0:
-      callGAPI(gbatch, None)
+      callGAPI(gbatch, None, soft_errors=True)
       sqlconn.commit()
       rewrite_line("backed up %s of %s messages" %
         (backed_up_messages, backup_count))
@@ -1002,13 +994,13 @@ def main(argv):
         callback=refresh_message)
       refreshed_messages += 1
       if len(gbatch._order) == options.batch_size:
-        callGAPI(gbatch, None)
+        callGAPI(gbatch, None, soft_errors=True)
         gbatch = googleapiclient.http.BatchHttpRequest()
         sqlconn.commit()
         rewrite_line("refreshed %s of %s messages" %
           (refreshed_messages, refresh_count))
     if len(gbatch._order) > 0:
-      callGAPI(gbatch, None)
+      callGAPI(gbatch, None, soft_errors=True)
       sqlconn.commit()
       rewrite_line("refreshed %s of %s messages" %
         (refreshed_messages, refresh_count))
@@ -1093,7 +1085,7 @@ def main(argv):
         try:
           response = callGAPI(service=restore_serv, function=restore_func,
             userId='me', throw_reasons=['invalidArgument',], media_body=media_body, body=body,
-            deleted=options.vault, **restore_params)
+            deleted=options.vault, soft_errors=True, **restore_params)
           exception = None
         except googleapiclient.errors.HttpError as e:
           response = None
@@ -1114,7 +1106,7 @@ def main(argv):
         # this message would put us over max, execute current batch first
         rewrite_line("restoring %s messages (%s/%s)" % (len(gbatch._order),
           current, restore_count))
-        callGAPI(gbatch, None)
+        callGAPI(gbatch, None, soft_errors=True)
         gbatch = googleapiclient.http.BatchHttpRequest()
         sqlconn.commit()
         current_batch_bytes = 5000
@@ -1126,7 +1118,7 @@ def main(argv):
       if len(gbatch._order) == options.batch_size:
         rewrite_line("restoring %s messages (%s/%s)" % (len(gbatch._order),
           current, restore_count))
-        callGAPI(gbatch, None)
+        callGAPI(gbatch, None, soft_errors=True)
         gbatch = googleapiclient.http.BatchHttpRequest()
         sqlconn.commit()
         current_batch_bytes = 5000
@@ -1134,7 +1126,7 @@ def main(argv):
     if len(gbatch._order) > 0:
       rewrite_line("restoring %s messages (%s/%s)" % (len(gbatch._order),
         current, restore_count))
-      callGAPI(gbatch, None)
+      callGAPI(gbatch, None, soft_errors=True)
       sqlconn.commit()
     print("\n")
     sqlconn.execute('DETACH resume')
@@ -1195,7 +1187,6 @@ def main(argv):
           request_id = hashlib.md5(message_marker.encode('utf-8')).hexdigest()[:25]
           if request_id in messages_to_skip:
             continue
-          restart_line()
           labels = message['X-Gmail-Labels']
           if labels != None and labels != '' and not options.strip_labels:
             mybytes, encoding = email.header.decode_header(labels)[0]
@@ -1204,15 +1195,19 @@ def main(argv):
                 labels = mybytes.decode(encoding)
               except UnicodeDecodeError:
                 pass
-            else:
-              labels = labels.decode('string-escape')
             labels = labels.split(',')
           else:
             labels = []
           if options.label_restored:
             for restore_label in options.label_restored:
               labels.append(restore_label)
-          labelIds = labelsToLabelIds(labels)
+          cased_labels = []
+          for label in labels:
+            if label.lower() in reserved_labels:
+              cased_labels.append(label.upper())
+            else:
+              cased_labels.append(label)
+          labelIds = labelsToLabelIds(cased_labels)
           del message['X-Gmail-Labels']
           del message['X-GM-THRID']
           rewrite_line(" message %s of %s" % (current, restore_count))
@@ -1228,7 +1223,9 @@ def main(argv):
             try:
               response = callGAPI(service=restore_serv, function=restore_func,
                 userId='me', throw_reasons=['invalidArgument',], media_body=media_body, body=body,
-                deleted=options.vault, **restore_params)
+                deleted=options.vault, soft_errors=True, **restore_params)
+              if response == None:
+                continue
               exception = None
             except googleapiclient.errors.HttpError as e:
               response = None
@@ -1247,7 +1244,7 @@ def main(argv):
             # this message would put us over max, execute current batch first
             rewrite_line("restoring %s messages (%s/%s)" %
               (len(gbatch._order), current, restore_count))
-            callGAPI(gbatch, None)
+            callGAPI(gbatch, None, soft_errors=True)
             gbatch = googleapiclient.http.BatchHttpRequest()
             sqlconn.commit()
             current_batch_bytes = 5000
@@ -1260,7 +1257,7 @@ def main(argv):
           if len(gbatch._order) == options.batch_size:
             rewrite_line("restoring %s messages (%s/%s)" %
               (len(gbatch._order), current, restore_count))
-            callGAPI(gbatch, None)
+            callGAPI(gbatch, None, soft_errors=True)
             gbatch = googleapiclient.http.BatchHttpRequest()
             sqlconn.commit()
             current_batch_bytes = 5000
@@ -1268,7 +1265,7 @@ def main(argv):
         if len(gbatch._order) > 0:
           rewrite_line("restoring %s messages (%s/%s)" %
             (len(gbatch._order), current, restore_count))
-          callGAPI(gbatch, None)
+          callGAPI(gbatch, None, soft_errors=True)
           sqlconn.commit()
     sqlconn.execute('DETACH mbox_resume')
     sqlconn.commit()
@@ -1321,7 +1318,7 @@ def main(argv):
         mimetype='message/rfc822', resumable=True, chunksize=chunksize)
       try:
         callGAPI(service=gmig.archive(), function='insert',
-          groupId=options.email, media_body=media)
+          groupId=options.email, media_body=media, soft_errors=True)
       except googleapiclient.errors.MediaUploadSizeError as e:
         print('\n ERROR: Message is to large for groups (16mb limit). \
           Skipping...')
@@ -1361,19 +1358,19 @@ def main(argv):
         id=a_message['id']), callback=purged_message)
       purged_messages += 1
       if len(gbatch._order) == options.batch_size:
-        callGAPI(gbatch, None)
+        callGAPI(gbatch, None, soft_errors=True)
         gbatch = googleapiclient.http.BatchHttpRequest()
         rewrite_line("purged %s of %s messages" %
           (purged_messages, purge_count))
     if len(gbatch._order) > 0:
-      callGAPI(gbatch, None)
+      callGAPI(gbatch, None, soft_errors=True)
       rewrite_line("purged %s of %s messages" % (purged_messages, purge_count))
     print("\n")
 
   # PURGE-LABELS #
   elif options.action == 'purge-labels':
     pattern = options.gmail_search
-    if pattern == None:
+    if pattern == '-is:chat':
       pattern = '.*'
     pattern = re.compile(pattern)
     existing_labels = callGAPI(service=gmail.users().labels(), function='list',
@@ -1384,7 +1381,7 @@ def main(argv):
         continue
       rewrite_line('Deleting label %s' % label_result['name'])
       callGAPI(service=gmail.users().labels(), function='delete',
-        userId='me', id=label_result['id'])
+        userId='me', id=label_result['id'], soft_errors=True)
     print('\n')
 
   # QUOTA #
@@ -1498,6 +1495,9 @@ otaBytesByService,quotaType')
     print('\n')
 
 if __name__ == '__main__':
+  if sys.version_info[0] < 3 or sys.version_info[1] < 5:
+    print('ERROR: GYB requires Python 3.5 or greater.')
+    sys.exit(3)
   doGYBCheckForUpdates()
   try:
     main(sys.argv[1:])
