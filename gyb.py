@@ -24,13 +24,13 @@ global __name__, __author__, __email__, __version__, __license__
 __program_name__ = 'Got Your Back: Gmail Backup'
 __author__ = 'Jay Lee'
 __email__ = 'jay0lee@gmail.com'
-__version__ = '0.47'
+__version__ = '1.0'
 __license__ = 'Apache License 2.0 (http://www.apache.org/licenses/LICENSE-2.0)'
 __website__ = 'http://git.io/gyb'
 __db_schema_version__ = '6'
 __db_schema_min_version__ = '6'        #Minimum for restore
 
-global extra_args, options, allLabelIds, allLabels, gmail, chunksize
+global extra_args, options, allLabelIds, allLabels, gmail, chunksize, reserved_labels, path_divider
 extra_args = {'prettyPrint': False}
 allLabelIds = dict()
 allLabels = dict()
@@ -65,6 +65,36 @@ import googleapiclient
 import googleapiclient.discovery
 import googleapiclient.errors
 
+if os.name == 'windows' or os.name == 'nt':
+  path_divider = '\\'
+else:
+  path_divider = '/'
+
+# Override some oauth2client.tools strings saving us a few GAM-specific mods to oauth2client
+oauth2client.tools._FAILED_START_MESSAGE = """
+Failed to start a local webserver listening on either port 8080
+or port 8090. Please check your firewall settings and locally
+running programs that may be blocking or using those ports.
+
+Falling back to nobrowser.txt and continuing with
+authorization.
+"""
+
+oauth2client.tools._BROWSER_OPENED_MESSAGE = """
+Your browser has been opened to visit:
+
+    {address}
+
+If your browser is on a different machine then press CTRL+C and
+create a file called nobrowser.txt in the same folder as GYB.
+"""
+
+oauth2client.tools._GO_TO_LINK_MESSAGE = """
+Go to the following link in your browser:
+
+    {address}
+"""
+
 def SetupOptionParser(argv):
   parser = argparse.ArgumentParser(add_help=False)
   #parser.usage = parser.print_help()
@@ -72,7 +102,8 @@ def SetupOptionParser(argv):
     dest='email',
     help='Full email address of user or group to act against')
   action_choices = ['backup','restore', 'restore-group', 'restore-mbox',
-    'count', 'purge', 'purge-labels', 'estimate', 'quota', 'reindex', 'revoke']
+    'count', 'purge', 'purge-labels', 'estimate', 'quota', 'reindex', 'revoke',
+    'split-mbox']
   parser.add_argument('--action',
     choices=action_choices,
     dest='action',
@@ -155,11 +186,7 @@ method breaks Gmail deduplication and threading.')
   return parser.parse_args(argv)
 
 def getProgPath():
-  if os.path.abspath('/') != -1:
-    divider = '/'
-  else:
-    divider = '\\'
-  return os.path.dirname(os.path.realpath(sys.argv[0]))+divider
+  return os.path.dirname(os.path.realpath(sys.argv[0]))+path_divider
 
 class cmd_flags(object):
   def __init__(self):
@@ -739,7 +766,7 @@ def labelsToLabelIds(labels):
     base_label = label.split('/')[0]
     if base_label in reserved_labels and base_label not in allLabels.keys():
       label = '_%s' % (label)
-    if label not in allLabels:
+    if label not in allLabels.keys():
       # create new label (or get it's id if it exists)
       label_results = callGAPI(service=gmail.users().labels(), function='create',
         body={'labelListVisibility': 'labelShow',
@@ -880,11 +907,59 @@ def main(argv):
   if options.version:
     print(getGYBVersion())
     sys.exit(0)
+  if options.local_folder == 'XXXuse-email-addressXXX':
+    options.local_folder = "GYB-GMail-Backup-%s" % options.email
+
+  # SPLIT-MBOX
+  if options.action == 'split-mbox':
+    from_pattern = 'From '
+    max_chunk_size = 100 * 1024 * 1024
+    for path, subdirs, files in os.walk(options.local_folder):
+      for filename in files:
+        if filename[-4:].lower() != '.mbx' and \
+          filename[-5:].lower() != '.mbox':
+          continue
+        file_path = '%s%s%s' % (path, path_divider, filename)
+        chunk_number = 0
+        chunk_name_pattern = '%s-%%05d.mbox' % (os.path.splitext(file_path)[0])
+        print('opening %s' % file_path)
+        with open(file_path, 'r') as f:
+          current_email = ''
+          current_chunk = ''
+          for line in f:
+            if line.startswith(from_pattern): # found end of email
+              if len(current_chunk) + len(current_email) > max_chunk_size: # reached max chunk size
+                if len(current_email) > max_chunk_size: # email is larger than chunk
+                  print('WARNING: skipping 100mb+ email')
+                  current_email = line
+                  continue
+                # write chunk and start new
+                chunk_filename = chunk_name_pattern % (chunk_number)
+                c = open(chunk_filename, 'w+')
+                print('writing %s' % chunk_filename)
+                c.write(current_chunk)
+                c.close()
+                chunk_number += 1
+                current_chunk = current_email
+                current_email = line
+              else: # add email to chunk
+                # add email to chunk and start on next
+                current_chunk += current_email
+                current_email = line
+                continue
+            else: # read another line
+              current_email += line
+          if len(current_chunk) > 0:
+            # write last chunk
+            chunk_filename = chunk_name_pattern % (chunk_number)
+            c = open(chunk_filename, 'w+')
+            c.write(current_chunk)
+            c.close()
+    sys.exit(0)
+
   if not options.email:
     print('ERROR: --email is required.')
     sys.exit(1)
-  if options.local_folder == 'XXXuse-email-addressXXX':
-    options.local_folder = "GYB-GMail-Backup-%s" % options.email
   if not options.service_account:  # 3-Legged OAuth
     requestOAuthAccess()
     if not doesTokenMatchEmail():
@@ -1154,10 +1229,6 @@ def main(argv):
     messages_to_skip = []
     for a_message in messages_to_skip_results:
       messages_to_skip.append(a_message[0])
-    if os.name == 'windows' or os.name == 'nt':
-      divider = '\\'
-    else:
-      divider = '/'
     current_batch_bytes = 5000
     gbatch = googleapiclient.http.BatchHttpRequest()
     restore_serv = gmail.users().messages()
@@ -1174,7 +1245,7 @@ def main(argv):
         if filename[-4:].lower() != '.mbx' and \
           filename[-5:].lower() != '.mbox':
           continue
-        file_path = '%s%s%s' % (path, divider, filename)
+        file_path = '%s%s%s' % (path, path_divider, filename)
         print("\nRestoring from %s file %s..." % (humansize(file_path), file_path))
         print("large files may take some time to open.")
         mbox = mailbox.mbox(file_path)
@@ -1204,7 +1275,13 @@ def main(argv):
           cased_labels = []
           for label in labels:
             if label.lower() in reserved_labels:
-              cased_labels.append(label.upper())
+              label = label.upper()
+              if label in ['CHAT', 'CHATS']:
+                cased_labels.append('Chats_restored')
+                continue
+              if label == 'DRAFTS':
+                label = u'DRAFT' 
+              cased_labels.append(label)
             else:
               cased_labels.append(label)
           labelIds = labelsToLabelIds(cased_labels)
