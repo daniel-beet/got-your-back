@@ -55,7 +55,14 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.nonmultipart import MIMENonMultipart
 from email.parser import FeedParser
 
-from googleapiclient import mimeparse
+# Oauth2client < 3 has the positional helper in 'util', >= 3 has it
+# in '_helpers'.
+try:
+  from oauth2client import util
+except ImportError:
+  from oauth2client import _helpers as util
+
+from googleapiclient import _auth
 from googleapiclient.errors import BatchError
 from googleapiclient.errors import HttpError
 from googleapiclient.errors import InvalidChunkSizeError
@@ -63,16 +70,17 @@ from googleapiclient.errors import ResumableUploadError
 from googleapiclient.errors import UnexpectedBodyError
 from googleapiclient.errors import UnexpectedMethodError
 from googleapiclient.model import JsonModel
-from oauth2client import util
 
 
 LOGGER = logging.getLogger(__name__)
 
-DEFAULT_CHUNK_SIZE = 512*1024
+DEFAULT_CHUNK_SIZE = 100*1024*1024
 
 MAX_URI_LENGTH = 2048
 
 _TOO_MANY_REQUESTS = 429
+
+DEFAULT_HTTP_TIMEOUT_SEC = 60
 
 
 def _should_retry_response(resp_status, content):
@@ -80,7 +88,7 @@ def _should_retry_response(resp_status, content):
 
   Args:
     resp_status: The response status received.
-    content: The response content body. 
+    content: The response content body.
 
   Returns:
     True if the response should be retried, otherwise False.
@@ -103,7 +111,10 @@ def _should_retry_response(resp_status, content):
     # Content is in JSON format.
     try:
       data = json.loads(content.decode('utf-8'))
-      reason = data['error']['errors'][0]['reason']
+      if isinstance(data, dict):
+        reason = data['error']['errors'][0]['reason']
+      else:
+        reason = data[0]['error']['errors']['reason']
     except (UnicodeDecodeError, ValueError, KeyError):
       LOGGER.warning('Invalid JSON content from response: %s', content)
       return False
@@ -195,7 +206,7 @@ class MediaUploadProgress(object):
       the percentage complete as a float, returning 0.0 if the total size of
       the upload is unknown.
     """
-    if self.total_size is not None:
+    if self.total_size is not None and self.total_size != 0:
       return float(self.resumable_progress) / float(self.total_size)
     else:
       return 0.0
@@ -221,7 +232,7 @@ class MediaDownloadProgress(object):
       the percentage complete as a float, returning 0.0 if the total size of
       the download is unknown.
     """
-    if self.total_size is not None:
+    if self.total_size is not None and self.total_size != 0:
       return float(self.resumable_progress) / float(self.total_size)
     else:
       return 0.0
@@ -501,7 +512,6 @@ class MediaFileUpload(MediaIoBaseUpload):
   Construct a MediaFileUpload and pass as the media_body parameter of the
   method. For example, if we had a service that allowed uploading images:
 
-
     media = MediaFileUpload('cow.png', mimetype='image/png',
       chunksize=1024*1024, resumable=True)
     farm.animals().insert(
@@ -639,15 +649,15 @@ class MediaIoBaseDownload(object):
     """Get the next chunk of the download.
 
     Args:
-      num_retries: Integer, number of times to retry 500's with randomized
+      num_retries: Integer, number of times to retry with randomized
             exponential backoff. If all retries fail, the raised HttpError
             represents the last request. If zero (default), we attempt the
             request only once.
 
     Returns:
-      (status, done): (MediaDownloadStatus, boolean)
+      (status, done): (MediaDownloadProgress, boolean)
          The value of 'done' will be True when the media has been fully
-         downloaded.
+         downloaded or the total size of the media is unknown.
 
     Raises:
       googleapiclient.errors.HttpError if the response was not a 2xx.
@@ -676,7 +686,7 @@ class MediaIoBaseDownload(object):
       elif 'content-length' in resp:
         self._total_size = int(resp['content-length'])
 
-      if self._progress == self._total_size:
+      if self._total_size is None or self._progress == self._total_size:
         self._done = True
       return MediaDownloadProgress(self._progress, self._total_size), self._done
     else:
@@ -758,10 +768,6 @@ class HttpRequest(object):
     self.response_callbacks = []
     self._in_error_state = False
 
-    # Pull the multipart boundary out of the content-type header.
-    major, minor, params = mimeparse.parse_mime_type(
-        self.headers.get('content-type', 'application/json'))
-
     # The size of the non-media part of the request.
     self.body_size = len(self.body or '')
 
@@ -782,7 +788,7 @@ class HttpRequest(object):
     Args:
       http: httplib2.Http, an http object to be used in place of the
             one the HttpRequest request object was constructed with.
-      num_retries: Integer, number of times to retry 500's with randomized
+      num_retries: Integer, number of times to retry with randomized
             exponential backoff. If all retries fail, the raised HttpError
             represents the last request. If zero (default), we attempt the
             request only once.
@@ -809,6 +815,7 @@ class HttpRequest(object):
     if 'content-length' not in self.headers:
       self.headers['content-length'] = str(self.body_size)
     # If the request URI is too long then turn it into a POST request.
+    # Assume that a GET request never contains a request body.
     if len(self.uri) > MAX_URI_LENGTH and self.method == 'GET':
       self.method = 'POST'
       self.headers['x-http-method-override'] = 'GET'
@@ -870,7 +877,7 @@ class HttpRequest(object):
     Args:
       http: httplib2.Http, an http object to be used in place of the
             one the HttpRequest request object was constructed with.
-      num_retries: Integer, number of times to retry 500's with randomized
+      num_retries: Integer, number of times to retry with randomized
             exponential backoff. If all retries fail, the raised HttpError
             represents the last request. If zero (default), we attempt the
             request only once.
@@ -965,7 +972,7 @@ class HttpRequest(object):
       except:
         self._in_error_state = True
         raise
-      if resp.status < 500:
+      if not _should_retry_response(resp.status, content):
         break
 
     return self._process_response(resp, content)
@@ -990,7 +997,11 @@ class HttpRequest(object):
     elif resp.status == 308:
       self._in_error_state = False
       # A "308 Resume Incomplete" indicates we are not done.
-      self.resumable_progress = int(resp['range'].split('-')[1]) + 1
+      try:
+        self.resumable_progress = int(resp['range'].split('-')[1]) + 1
+      except KeyError:
+        # If resp doesn't contain range header, resumable progress is 0
+        self.resumable_progress = 0
       if 'location' in resp:
         self.resumable_uri = resp['location']
     else:
@@ -1113,21 +1124,25 @@ class BatchHttpRequest(object):
     # If there is no http per the request then refresh the http passed in
     # via execute()
     creds = None
-    if request.http is not None and hasattr(request.http.request,
-        'credentials'):
-      creds = request.http.request.credentials
-    elif http is not None and hasattr(http.request, 'credentials'):
-      creds = http.request.credentials
+    request_credentials = False
+
+    if request.http is not None:
+      creds = _auth.get_credentials_from_http(request.http)
+      request_credentials = True
+
+    if creds is None and http is not None:
+      creds = _auth.get_credentials_from_http(http)
+
     if creds is not None:
       if id(creds) not in self._refreshed_credentials:
-        creds.refresh(http)
+        _auth.refresh_credentials(creds)
         self._refreshed_credentials[id(creds)] = 1
 
     # Only apply the credentials if we are using the http object passed in,
     # otherwise apply() will get called during _serialize_request().
-    if request.http is None or not hasattr(request.http.request,
-        'credentials'):
-      creds.apply(request.headers)
+    if request.http is None or not request_credentials:
+      _auth.apply_credentials(creds, request.headers)
+
 
   def _id_to_header(self, id_):
     """Convert an id to a Content-ID header value.
@@ -1187,9 +1202,10 @@ class BatchHttpRequest(object):
     msg = MIMENonMultipart(major, minor)
     headers = request.headers.copy()
 
-    if request.http is not None and hasattr(request.http.request,
-        'credentials'):
-      request.http.request.credentials.apply(headers)
+    if request.http is not None:
+      credentials = _auth.get_credentials_from_http(request.http)
+      if credentials is not None:
+        _auth.apply_credentials(credentials, headers)
 
     # MIMENonMultipart adds its own Content-Type header.
     if 'content-type' in headers:
@@ -1393,6 +1409,14 @@ class BatchHttpRequest(object):
 
     if http is None:
       raise ValueError("Missing a valid http object.")
+
+    # Special case for OAuth2Credentials-style objects which have not yet been
+    # refreshed with an initial access_token.
+    creds = _auth.get_credentials_from_http(http)
+    if creds is not None:
+      if not _auth.is_valid(creds):
+        LOGGER.info('Attempting refresh to obtain initial access_token')
+        _auth.refresh_credentials(creds)
 
     self._execute(http, self._order, self._requests)
 
@@ -1714,3 +1738,21 @@ def tunnel_patch(http):
 
   http.request = new_request
   return http
+
+
+def build_http():
+  """Builds httplib2.Http object
+
+  Returns:
+  A httplib2.Http object, which is used to make http requests, and which has timeout set by default.
+  To override default timeout call
+
+    socket.setdefaulttimeout(timeout_in_sec)
+
+  before interacting with this method.
+  """
+  if socket.getdefaulttimeout() is not None:
+    http_timeout = socket.getdefaulttimeout()
+  else:
+    http_timeout = DEFAULT_HTTP_TIMEOUT_SEC
+  return httplib2.Http(timeout=http_timeout)

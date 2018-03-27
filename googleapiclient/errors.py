@@ -23,7 +23,12 @@ __author__ = 'jcgregorio@google.com (Joe Gregorio)'
 
 import json
 
-from oauth2client import util
+# Oauth2client < 3 has the positional helper in 'util', >= 3 has it
+# in '_helpers'.
+try:
+  from oauth2client import util
+except ImportError:
+  from oauth2client import _helpers as util
 
 
 class Error(Exception):
@@ -41,21 +46,34 @@ class HttpError(Error):
         raise TypeError("HTTP content should be bytes")
     self.content = content
     self.uri = uri
+    self.error_details = ''
 
   def _get_reason(self):
     """Calculate the reason for the error from the response content."""
     reason = self.resp.reason
     try:
       data = json.loads(self.content.decode('utf-8'))
-      reason = data['error']['message']
-    except (ValueError, KeyError):
+      if isinstance(data, dict):
+        reason = data['error']['message']
+        if 'details' in data['error']:
+            self.error_details = data['error']['details']
+      elif isinstance(data, list) and len(data) > 0:
+        first_error = data[0]
+        reason = first_error['error']['message']
+        if 'details' in first_error['error']:
+            self.error_details = first_error['error']['details']
+    except (ValueError, KeyError, TypeError):
       pass
     if reason is None:
       reason = ''
     return reason
 
   def __repr__(self):
-    if self.uri:
+    reason = self._get_reason()
+    if self.error_details:
+      return '<HttpError %s when requesting %s returned "%s". Details: "%s">' % \
+             (self.resp.status, self.uri, reason.strip(), self.error_details)
+    elif self.uri:
       return '<HttpError %s when requesting %s returned "%s">' % (
           self.resp.status, self.uri, self._get_reason().strip())
     else:
@@ -117,6 +135,9 @@ class BatchError(HttpError):
     self.reason = reason
 
   def __repr__(self):
+    if getattr(self.resp, 'status', None) is None:
+      return '<BatchError "%s">' % (self.reason)
+    else:
       return '<BatchError %s "%s">' % (self.resp.status, self.reason)
 
   __str__ = __repr__
