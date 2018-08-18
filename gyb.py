@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.7
 #
 # Got Your Back
 #
@@ -6,7 +6,7 @@
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#      http://www.apache.org/licenses/LICENSE-2.0
+#      https://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -17,24 +17,23 @@
 """\n%s\n\nGot Your Back (GYB) is a command line tool which allows users to
 backup and restore their Gmail.
 
-For more information, see http://git.io/gyb/
+For more information, see https://git.io/gyb/
 """
 
 global __name__, __author__, __email__, __version__, __license__
 __program_name__ = 'Got Your Back: Gmail Backup'
 __author__ = 'Jay Lee'
 __email__ = 'jay0lee@gmail.com'
-__version__ = '1.01'
-__license__ = 'Apache License 2.0 (http://www.apache.org/licenses/LICENSE-2.0)'
-__website__ = 'http://git.io/gyb'
+__version__ = '1.1'
+__license__ = 'Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0)'
+__website__ = 'https://git.io/gyb'
 __db_schema_version__ = '6'
 __db_schema_min_version__ = '6'        #Minimum for restore
 
-global extra_args, options, allLabelIds, allLabels, gmail, chunksize, reserved_labels, path_divider
+global extra_args, options, allLabelIds, allLabels, gmail, reserved_labels, path_divider
 extra_args = {'prettyPrint': False}
 allLabelIds = dict()
 allLabels = dict()
-chunksize = 1024 * 1024 * 30
 reserved_labels = ['inbox', 'spam', 'trash', 'unread', 'starred', 'important',
   'sent', 'draft', 'chat', 'chats', 'migrated', 'todo', 'todos', 'buzz',
   'bin', 'allmail', 'drafts']
@@ -51,11 +50,13 @@ import datetime
 import sqlite3
 import email
 import hashlib
-import mailbox
 import re
+import string
 from itertools import islice, chain
 import base64
 import json
+import xml.etree.ElementTree as etree
+
 import httplib2
 import oauth2client.client
 import oauth2client.file
@@ -64,6 +65,8 @@ import oauth2client.tools
 import googleapiclient
 import googleapiclient.discovery
 import googleapiclient.errors
+
+import fmbox
 
 if os.name == 'windows' or os.name == 'nt':
   path_divider = '\\'
@@ -103,7 +106,7 @@ def SetupOptionParser(argv):
     help='Full email address of user or group to act against')
   action_choices = ['backup','restore', 'restore-group', 'restore-mbox',
     'count', 'purge', 'purge-labels', 'estimate', 'quota', 'reindex', 'revoke',
-    'split-mbox']
+    'split-mbox', 'create-project', 'check-service-account']
   parser.add_argument('--action',
     choices=action_choices,
     dest='action',
@@ -124,7 +127,8 @@ Default is GYB-GMail-Backup-<email>',
     dest='label_restored',
     help='Optional: On restore, all messages will additionally receive \
 this label. For example, "--label_restored gyb-restored" will label all \
-uploaded messages with a gyb-restored label.')
+uploaded messages with a gyb-restored label.',
+    default=[])
   parser.add_argument('--strip-labels',
     dest='strip_labels',
     action='store_true',
@@ -313,58 +317,89 @@ https://www.googleapis.com/auth/gmail.labels',
     http = httplib2.Http(
       disable_ssl_certificate_validation=disable_ssl_certificate_validation)
 
-def doGYBCheckForUpdates():
-  import urllib.request, urllib.error, urllib.parse, calendar
-  no_update_check_file = getProgPath()+'noupdatecheck.txt'
+#
+# Read a file
+#
+def readFile(filename, mode=u'rb', continueOnError=False, displayError=True, encoding=None):
+  try:
+    if filename != u'-':
+      if not encoding:
+        with open(os.path.expanduser(filename), mode) as f:
+          return f.read()
+      with codecs.open(os.path.expanduser(filename), mode, encoding) as f:
+        content = f.read()
+# codecs does not strip UTF-8 BOM (ef:bb:bf) so we must
+        if not content.startswith(codecs.BOM_UTF8):
+          return content
+        return content[3:]
+    return unicode(sys.stdin.read())
+  except IOError as e:
+    if continueOnError:
+      if displayError:
+        stderrWarningMsg(e)
+      return None
+    systemErrorExit(6, e)
+  except (LookupError, UnicodeDecodeError, UnicodeError) as e:
+    systemErrorExit(2, str(e))
+
+def doGYBCheckForUpdates(forceCheck=False, debug=False):
+  import calendar
+
+  def _LatestVersionNotAvailable():
+    if forceCheck:
+      systemErrorExit(4, u'GYB Latest Version information not available')
+
+  if options.debug:
+    httplib2.debuglevel = 4 
   last_update_check_file = getProgPath()+'lastcheck.txt'
-  if os.path.isfile(no_update_check_file): return
-  try:
-    current_version = float(__version__)
-  except ValueError:
-    return
-  if os.path.isfile(last_update_check_file):
-    f = open(last_update_check_file, 'r')
-    last_check_time = int(f.readline())
-    f.close()
-  else:
-    last_check_time = 0
+  current_version = __version__
   now_time = calendar.timegm(time.gmtime())
-  one_week_ago_time = now_time - 604800
-  if last_check_time > one_week_ago_time: return
+  check_url = 'https://api.github.com/repos/jay0lee/got-your-back/releases' # includes pre-releases
+  if not forceCheck:
+    last_check_time_str = readFile(last_update_check_file, continueOnError=True, displayError=False)
+    last_check_time = int(last_check_time_str) if last_check_time_str and last_check_time_str.isdigit() else 0
+    if last_check_time > now_time-604800:
+      return
+    check_url = check_url + '/latest' # latest full release
+  headers = {u'Accept': u'application/vnd.github.v3.text+json'}
+  disable_ssl_certificate_validation = False
+  if os.path.isfile(getProgPath()+'noverifyssl.txt'):
+    disable_ssl_certificate_validation = True
+  simplehttp = httplib2.Http(disable_ssl_certificate_validation=disable_ssl_certificate_validation)
   try:
-    checkUrl = 'https://gyb-update.appspot.com/latest-version.txt?v=%s'
-    c = urllib.request.urlopen(checkUrl % (__version__,))
+    (_, c) = simplehttp.request(check_url, u'GET', headers=headers)
     try:
-      latest_version = float(c.read())
+      release_data = json.loads(c)
     except ValueError:
+      _LatestVersionNotAvailable()
       return
+    if isinstance(release_data, list):
+      release_data = release_data[0] # only care about latest release
+    if not isinstance(release_data, dict) or u'tag_name' not in release_data:
+      _gamLatestVersionNotAvailable()
+      return
+    latest_version = release_data[u'tag_name']
+    if latest_version[0].lower() == u'v':
+      latest_version = latest_version[1:]
+    if forceCheck or (latest_version > current_version):
+      print('Version Check:\n Current: {0}\n Latest: {1}'.format(current_version, latest_version))
     if latest_version <= current_version:
-      f = open(last_update_check_file, 'w')
-      f.write(str(now_time))
-      f.close()
+      writeFile(last_update_check_file, str(now_time), continueOnError=True, displayError=forceCheck)
       return
-    announceUrl = 'https://gyb-update.appspot.com/\
-latest-version-announcement.txt?v=%s'
-    a = urllib.request.urlopen(announceUrl % (__version__,))
-    announcement = a.read().decode("utf-8")
-    sys.stderr.write('\nThere\'s a new version of GYB!!!\n\n')
+    announcement = release_data.get(u'body_text', u'No details about this release')
+    sys.stderr.write(u'\nGYB %s release notes:\n\n' % latest_version)
     sys.stderr.write(announcement)
-    visit_gyb = input("\n\nHit Y to visit the GYB website and download \
-the latest release. Hit Enter to just continue with this boring old version.\
- GYB won't bother you with this announcement for 1 week or you can create a \
-file named %s and GYB won't ever check for updates: " % no_update_check_file)
-    if visit_gyb.lower() == 'y':
+    try:
+      print('\n\nHit CTRL+C to visit the GYB website and download the latest release or wait 15 seconds to continue with this boring old version. GYB won\'t bother you with this announcement for 1 week or you can create a file named noupdatecheck.txt in the same location as gyb.py or gyb.exe and GYB won\'t ever check for updates.')
+      time.sleep(15)
+    except KeyboardInterrupt:
       import webbrowser
-      webbrowser.open(__website__)
-      print('GYB is now exiting so that you can overwrite this old version \
-with the latest release')
+      webbrowser.open(release_data[u'html_url'])
+      print('GYB exiting for update...')
       sys.exit(0)
-    f = open(last_update_check_file, 'w')
-    f.write(str(now_time))
-    f.close()
-  except urllib.error.HTTPError:
+    writeFile(last_update_check_file, str(now_time), continueOnError=True, displayError=forceCheck)
     return
-  except urllib.error.URLError:
+  except (httplib2.HttpLib2Error, httplib2.ServerNotFoundError):
     return
 
 def getAPIVer(api):
@@ -404,7 +439,6 @@ def buildGAPIObject(api):
   http = httplib2.Http(
     disable_ssl_certificate_validation=disable_ssl_certificate_validation)
   if options.debug:
-    httplib2.debuglevel = 4
     extra_args['prettyPrint'] = True
   if os.path.isfile(getProgPath()+'extra-args.txt'):
     import configparser
@@ -447,7 +481,6 @@ def buildGAPIServiceObject(api, soft_errors=False):
   http = httplib2.Http(
     disable_ssl_certificate_validation=disable_ssl_certificate_validation)
   if options.debug:
-    httplib2.debuglevel = 4
     extra_args['prettyPrint'] = True
   if os.path.isfile(getProgPath()+'extra-args.txt'):
     import configparser
@@ -568,6 +601,256 @@ def callGAPIpages(service, function, items='items',
         sys.stderr.write('\n')
       return all_pages
 
+VALIDEMAIL_PATTERN = re.compile(r'^[^@]+@[^@]+\.[^@]+$')
+
+def getValidateLoginHint(login_hint):
+  if login_hint:
+    login_hint = login_hint.strip()
+    if VALIDEMAIL_PATTERN.match(login_hint):
+      return login_hint
+  while True:
+    login_hint = input('\nWhat is your G Suite admin email address? ').strip()
+    if VALIDEMAIL_PATTERN.match(login_hint):
+      return login_hint
+    print('Error: that is not a valid email address')
+
+def percentage(part, whole):
+  return '{0:.2f}'.format(100 * float(part)/float(whole))
+
+def getCRMService(login_hint):
+  from oauth2client.contrib.dictionary_storage import DictionaryStorage
+  scope = 'https://www.googleapis.com/auth/cloud-platform'
+  client_id = '297408095146-fug707qsjv4ikron0hugpevbrjhkmsk7.apps.googleusercontent.com'
+  client_secret = 'qM3dP8f_4qedwzWQE1VR4zzU'
+  flow = oauth2client.client.OAuth2WebServerFlow(client_id=client_id,
+                    client_secret=client_secret, scope=scope, redirect_uri=oauth2client.client.OOB_CALLBACK_URN,
+                    access_type=u'online', response_type=u'code', login_hint=login_hint)
+  storage_dict = {}
+  storage = DictionaryStorage(storage_dict, u'credentials')
+  flags = cmd_flags()
+  if os.path.isfile(getProgPath()+'nobrowser.txt'):
+    flags.noauth_local_webserver = True
+  disable_ssl_certificate_validation = False
+  if os.path.isfile(getProgPath()+'noverifyssl.txt'):
+    disable_ssl_certificate_validation = True
+  http = httplib2.Http(disable_ssl_certificate_validation=disable_ssl_certificate_validation)
+  try:
+    credentials = oauth2client.tools.run_flow(flow=flow, storage=storage, flags=flags, http=http)
+  except httplib2.CertificateValidationUnsupported:
+    print('ERROR: Your Python installation does not support SSL.')
+    sys.exit(3)
+  http = credentials.authorize(httplib2.Http(disable_ssl_certificate_validation=disable_ssl_certificate_validation,
+                 cache=None))
+  return (googleapiclient.discovery.build('cloudresourcemanager', u'v1', http=http, cache_discovery=False), http)
+
+GYB_PROJECT_APIS = 'https://raw.githubusercontent.com/jay0lee/got-your-back/master/project-apis.txt?'
+def enableProjectAPIs(httpObj, project_name, checkEnabled):
+  simplehttp = httplib2.Http()
+  s, c = simplehttp.request(GYB_PROJECT_APIS, 'GET')
+  if s.status < 200 or s.status > 299:
+    print('ERROR: tried to retrieve %s but got %s' % (GYB_PROJECT_APIS, s.status))
+    sys.exit(0)
+  apis = c.decode("utf-8").splitlines()
+  serveman = googleapiclient.discovery.build('servicemanagement', 'v1', http=httpObj, cache_discovery=False)
+  if checkEnabled:
+    enabledServices = callGAPIpages(serveman.services(), 'list', 'services',
+                                    consumerId=project_name, fields='nextPageToken,services(serviceName)')
+    for enabled in enabledServices:
+      if 'serviceName' in enabled:
+        if enabled['serviceName'] in apis:
+          print(' API %s already enabled...' % enabled['serviceName'])
+          apis.remove(enabled['serviceName'])
+        else:
+          print(' API %s (non-GYB) is enabled (which is fine)' % enabled[u'serviceName'])
+  for api in apis:
+    while True:
+      print(' enabling API %s...' % api)
+      try:
+        callGAPI(serveman.services(), u'enable',
+                 throw_reasons=['failedPrecondition'],
+                 serviceName=api, body={u'consumerId': project_name})
+        break
+      except googleapiclient.errors.HttpError as e:
+        print('\nThere was an error enabling %s. Please resolve error as described below:' % api)
+        print
+        print('\n%s\n' % e)
+        print
+        input('Press enter once resolved and we will try enabling the API again.')
+
+def writeFile(filename, data, mode=u'wb', continueOnError=False, displayError=True):
+  if isinstance(data, str):
+    data = data.encode('utf-8')
+  try:
+    with open(os.path.expanduser(filename), mode) as f:
+      f.write(data)
+    return True
+  except IOError as e:
+    if continueOnError:
+      if displayError:
+        stderrErrorMsg(e)
+      return False
+    systemErrorExit(6, e)
+
+def doCreateProject():
+  service_account_file = 'oauth2service.json'
+  for a_file in [service_account_file]:
+    if os.path.exists(a_file):
+      print('File %s already exists. Please delete or rename it before attempting to create another project.' % a_file)
+      sys.exit(5)
+  if not options.email:
+    print('ERROR: the --email argument is required')
+    sys.exit(3)
+  login_hint = options.email
+  login_domain = login_hint[login_hint.find(u'@')+1:]
+  crm, httpObj = getCRMService(login_hint)
+  project_id = u'gyb-project'
+  for i in range(3):
+    project_id += u'-%s' % ''.join(random.choice(string.digits + string.ascii_lowercase) for i in range(3))
+  project_name = u'project:%s' % project_id
+  body = {u'projectId': project_id, u'name': u'Got Your Back Project'}
+  while True:
+    create_again = False
+    print('Creating project "%s"...' % body[u'name'])
+    create_operation = callGAPI(crm.projects(), u'create',
+                                body=body)
+    operation_name = create_operation[u'name']
+    time.sleep(5) # Google recommends always waiting at least 5 seconds
+    for i in range(1, 5):
+      print('Checking project status...')
+      status = callGAPI(crm.operations(), u'get',
+                        name=operation_name)
+      if u'error' in status:
+        if status[u'error'].get(u'message', u'') == u'No permission to create project in organization':
+          print('Hmm... Looks like you have no rights to your Google Cloud Organization.')
+          print('Attempting to fix that...')
+          getorg = callGAPI(crm.organizations(), u'search',
+                            body={u'filter': u'domain:%s' % login_domain})
+          try:
+            organization = getorg[u'organizations'][0][u'name']
+            print('Your organization name is %s' % organization)
+          except (KeyError, IndexError):
+            print('you have no rights to create projects for your organization and you don\'t seem to be a super admin! Sorry, there\'s nothing more I can do.')
+            sys.exit(3)
+          org_policy = callGAPI(crm.organizations(), u'getIamPolicy',
+                                resource=organization, body={})
+          if u'bindings' not in org_policy:
+            org_policy[u'bindings'] = []
+            print('Looks like no one has rights to your Google Cloud Organization. Attempting to give you create rights...')
+          else:
+            print('The following rights seem to exist:')
+            for a_policy in org_policy[u'bindings']:
+              if u'role' in a_policy:
+                print(' Role: %s' % a_policy[u'role'])
+              if u'members' in a_policy:
+                print(' Members:')
+                for member in a_policy[u'members']:
+                  print('  %s' % member)
+              print
+          my_role = u'roles/resourcemanager.projectCreator'
+          print('Giving %s the role of %s...' % (login_hint, my_role))
+          org_policy[u'bindings'].append({u'role': my_role, u'members': [u'user:%s' % login_hint]})
+          callGAPI(crm.organizations(), u'setIamPolicy',
+                   resource=organization, body={u'policy': org_policy})
+          create_again = True
+          break
+        try:
+          if status[u'error'][u'details'][0][u'violations'][0][u'description'] == u'Callers must accept Terms of Service':
+            print('''Please go to:
+https://console.cloud.google.com/start
+and accept the Terms of Service (ToS). As soon as you've accepted the ToS popup, you can return here and press enter.''')
+            input()
+            create_again = True
+            break
+        except (IndexError, KeyError):
+          pass
+        print(status)
+        sys.exit(1)
+      if status.get(u'done', False):
+        break
+      sleep_time = i ** 2
+      print('Project still being created. Sleeping %s seconds' % sleep_time)
+      time.sleep(sleep_time)
+    if create_again:
+      continue
+    if not status.get(u'done', False):
+      print('Failed to create project: %s' % status)
+      sys.exit(1)
+    elif u'error' in status:
+      print(status[u'error'])
+      sys.exit(2)
+    break
+  disable_ssl_certificate_validation = False
+  if os.path.isfile(getProgPath()+'noverifyssl.txt'):
+    disable_ssl_certificate_validation = True
+  enableProjectAPIs(httpObj, project_name, False)
+  iam = googleapiclient.discovery.build(u'iam', u'v1', http=httpObj, cache_discovery=False)
+  print('Creating Service Account')
+  service_account = callGAPI(iam.projects().serviceAccounts(), u'create',
+                             name=u'projects/%s' % project_id,
+                             body={u'accountId': project_id, u'serviceAccount': {u'displayName': u'GYB Project Service Account'}})
+  key = callGAPI(iam.projects().serviceAccounts().keys(), u'create',
+                 name=service_account['name'], body={'privateKeyType': 'TYPE_GOOGLE_CREDENTIALS_FILE', 'keyAlgorithm': u'KEY_ALG_RSA_2048'})
+  oauth2service_data = base64.b64decode(key[u'privateKeyData'])
+  writeFile(service_account_file, oauth2service_data, continueOnError=False)
+  sa_url = 'https://console.developers.google.com/iam-admin/serviceaccounts/project?project=%s' % project_id
+  print('''Almost there! Now please go to:
+
+%s
+
+1. Click the 3 dots to the right of your service account.
+2. Choose Edit.
+3. Check the "Enable G Suite Domain-wide Delegation" box and click Save.
+''')
+  input('Press Enter when done...')
+  print('That\'s it! Your GYB Project is created and ready to use.')
+
+API_SCOPE_MAPPING = {
+  u'drive': ['https://www.googleapis.com/auth/drive.appdata',],
+  u'gmail': ['https://mail.google.com/',],
+  u'groupsmigration': ['https://www.googleapis.com/auth/apps.groups.migration',],
+}
+def doCheckServiceAccount():
+  all_scopes = []
+  for _, scopes in API_SCOPE_MAPPING.items():
+    for scope in scopes:
+      if scope not in all_scopes:
+        all_scopes.append(scope)
+  all_scopes.sort()
+  all_scopes_pass = True
+  for scope in all_scopes:
+    try:
+      credentials = oauth2client.service_account.ServiceAccountCredentials.from_json_keyfile_name(
+          'oauth2service.json', [scope])
+      credentials = credentials.create_delegated(options.email)
+      credentials.user_agent = getGYBVersion(' | ')
+      credentials.refresh(httplib2.Http())
+      result = u'PASS'
+    except httplib2.ServerNotFoundError as e:
+      print(e)
+      sys.exit(4)
+    except oauth2client.client.HttpAccessTokenRefreshError:
+      result = u'FAIL'
+      all_scopes_pass = False
+    print(' Scope: {0:60} {1}'.format(scope, result))
+  if all_scopes_pass:
+    print('\nAll scopes passed!\nService account %s is fully authorized.' % credentials.client_id)
+    return
+  user_domain = options.email[options.email.find(u'@')+1:]
+  scopes_failed = '''SOME SCOPES FAILED! Please go to:
+
+https://admin.google.com/%s/AdminHome?#OGX:ManageOauthClients
+
+and grant Client name:
+
+%s
+
+Access to scopes:
+
+%s\n''' % (user_domain, credentials.client_id, ',\n'.join(all_scopes))
+  print('')
+  print(scopes_failed)  
+  sys.exit(3)
+
 def message_is_backed_up(message_num, sqlcur, sqlconn, backup_folder):
     try:
       sqlcur.execute('''
@@ -678,9 +961,12 @@ def getMessageIDs (sqlconn, backup_folder):
 def rebuildUIDTable(sqlconn):
   pass
 
-suffixes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
-def humansize(file_path):
-  nbytes = os.stat(file_path).st_size
+suffixes = ['b', 'kb', 'mb', 'gb', 'tb', 'pb']
+def humansize(myobject):
+  if isinstance(myobject, (str, bytes)):
+    nbytes = os.stat(myobject).st_size
+  else:
+    nbytes = myobject
   if nbytes == 0: return '0 B'
   i = 0
   while nbytes >= 1024 and i < len(suffixes)-1:
@@ -906,57 +1192,23 @@ def bytes_to_larger(myval):
 def main(argv):
   global options, gmail
   options = SetupOptionParser(argv)
+  doGYBCheckForUpdates(debug=options.debug)
   if options.version:
     print(getGYBVersion())
     sys.exit(0)
   if options.local_folder == 'XXXuse-email-addressXXX':
     options.local_folder = "GYB-GMail-Backup-%s" % options.email
 
-  # SPLIT-MBOX
-  if options.action == 'split-mbox':
-    from_pattern = 'From '
-    max_chunk_size = 100 * 1024 * 1024
-    for path, subdirs, files in os.walk(options.local_folder):
-      for filename in files:
-        if filename[-4:].lower() != '.mbx' and \
-          filename[-5:].lower() != '.mbox':
-          continue
-        file_path = '%s%s%s' % (path, path_divider, filename)
-        chunk_number = 0
-        chunk_name_pattern = '%s-%%05d.mbox' % (os.path.splitext(file_path)[0])
-        print('opening %s' % file_path)
-        with open(file_path, 'r') as f:
-          current_email = ''
-          current_chunk = ''
-          for line in f:
-            if line.startswith(from_pattern): # found end of email
-              if len(current_chunk) + len(current_email) > max_chunk_size: # reached max chunk size
-                if len(current_email) > max_chunk_size: # email is larger than chunk
-                  print('WARNING: skipping 100mb+ email')
-                  current_email = line
-                  continue
-                # write chunk and start new
-                chunk_filename = chunk_name_pattern % (chunk_number)
-                c = open(chunk_filename, 'w+')
-                print('writing %s' % chunk_filename)
-                c.write(current_chunk)
-                c.close()
-                chunk_number += 1
-                current_chunk = current_email
-                current_email = line
-              else: # add email to chunk
-                # add email to chunk and start on next
-                current_chunk += current_email
-                current_email = line
-                continue
-            else: # read another line
-              current_email += line
-          if len(current_chunk) > 0:
-            # write last chunk
-            chunk_filename = chunk_name_pattern % (chunk_number)
-            c = open(chunk_filename, 'w+')
-            c.write(current_chunk)
-            c.close()
+  if options.debug:
+    httplib2.debuglevel = 4
+  if options.action == 'create-project':
+    doCreateProject()
+    sys.exit(0)
+  elif options.action == 'check-service-account':
+    doCheckServiceAccount()
+    sys.exit(0)
+  elif options.action == 'split-mbox':
+    print('split-mbox is no longer necessary and is deprecated. Mbox file size should not impact restore performance in this version.')
     sys.exit(0)
 
   if not options.email:
@@ -969,7 +1221,6 @@ def main(argv):
     gmail = buildGAPIObject('gmail')
   else:
     gmail = buildGAPIServiceObject('gmail')
-  batch_uri = gmail._rootDesc['rootUrl'] + gmail._rootDesc['batchPath']
   if not os.path.isdir(options.local_folder):
     if options.action in ['backup',]:
       os.mkdir(options.local_folder)
@@ -1036,7 +1287,7 @@ def main(argv):
     backup_count = len(messages_to_backup)
     print("GYB needs to backup %s messages" % backup_count)
     backed_up_messages = 0
-    gbatch = googleapiclient.http.BatchHttpRequest(batch_uri=batch_uri)
+    gbatch = gmail.new_batch_http_request()
     for a_message in messages_to_backup:
       gbatch.add(gmail.users().messages().get(userId='me',
         id=a_message, format='raw',
@@ -1045,7 +1296,7 @@ def main(argv):
       backed_up_messages += 1
       if len(gbatch._order) == options.batch_size:
         callGAPI(gbatch, None, soft_errors=True)
-        gbatch = googleapiclient.http.BatchHttpRequest(batch_uri=batch_uri)
+        gbatch = gmail.new_batch_http_request()
         sqlconn.commit()
         rewrite_line("backed up %s of %s messages" %
           (backed_up_messages, backup_count))
@@ -1064,7 +1315,7 @@ def main(argv):
     sqlcur.executescript("""
        CREATE TEMP TABLE current_labels (label TEXT);
     """)
-    gbatch = googleapiclient.http.BatchHttpRequest(batch_uri=batch_uri)
+    gbatch = gmail.new_batch_http_request()
     for a_message in messages_to_refresh:
       gbatch.add(gmail.users().messages().get(userId='me',
         id=a_message, format='minimal',
@@ -1073,7 +1324,7 @@ def main(argv):
       refreshed_messages += 1
       if len(gbatch._order) == options.batch_size:
         callGAPI(gbatch, None, soft_errors=True)
-        gbatch = googleapiclient.http.BatchHttpRequest(batch_uri=batch_uri)
+        gbatch = gmail.new_batch_http_request()
         sqlconn.commit()
         rewrite_line("refreshed %s of %s messages" %
           (refreshed_messages, refresh_count))
@@ -1087,7 +1338,7 @@ def main(argv):
   # RESTORE #
   elif options.action == 'restore':
     if options.batch_size == 0:
-      options.batch_size = 10
+      options.batch_size = 5
     resumedb = os.path.join(options.local_folder, 
                             "%s-restored.sqlite" % options.email)
     if options.noresume:
@@ -1120,7 +1371,7 @@ def main(argv):
     messages_to_restore_results = sqlcur.fetchall()
     restore_count = len(messages_to_restore_results)
     current = 0
-    gbatch = googleapiclient.http.BatchHttpRequest(batch_uri=batch_uri)
+    gbatch = gmail.new_batch_http_request()
     max_batch_bytes = 8 * 1024 * 1024
     current_batch_bytes = 5000 # accounts for metadata
     largest_in_batch = 0
@@ -1153,13 +1404,13 @@ def main(argv):
       b64_message_size = (len(full_message)/3) * 4
       if b64_message_size > 1 * 1024 * 1024 or options.batch_size == 1:
         # don't batch/raw >1mb messages, just do single
-        rewrite_line('restoring single large message (%s/%s)' %
-          (current, restore_count))
+        rewrite_line('restoring %s message (%s/%s)' %
+          (humansize(b64_message_size), current, restore_count))
         # Note resumable=True is important here, it prevents errors on (bad)
         # messages that should be ASCII but contain extended chars.
         # What's that? No, no idea why
         media_body = googleapiclient.http.MediaInMemoryUpload(full_message,
-          mimetype='message/rfc822', resumable=True, chunksize=chunksize)
+          mimetype='message/rfc822', resumable=True)
         try:
           response = callGAPI(service=restore_serv, function=restore_func,
             userId='me', throw_reasons=['invalidArgument',], media_body=media_body, body=body,
@@ -1185,7 +1436,7 @@ def main(argv):
         rewrite_line("restoring %s messages (%s/%s)" % (len(gbatch._order),
           current, restore_count))
         callGAPI(gbatch, None, soft_errors=True)
-        gbatch = googleapiclient.http.BatchHttpRequest(batch_uri=batch_uri)
+        gbatch = gmail.new_batch_http_request()
         sqlconn.commit()
         current_batch_bytes = 5000
         largest_in_batch = 0
@@ -1197,7 +1448,7 @@ def main(argv):
         rewrite_line("restoring %s messages (%s/%s)" % (len(gbatch._order),
           current, restore_count))
         callGAPI(gbatch, None, soft_errors=True)
-        gbatch = googleapiclient.http.BatchHttpRequest(batch_uri=batch_uri)
+        gbatch = gmail.new_batch_http_request()
         sqlconn.commit()
         current_batch_bytes = 5000
         largest_in_batch = 0
@@ -1213,7 +1464,7 @@ def main(argv):
  # RESTORE-MBOX #
   elif options.action == 'restore-mbox':
     if options.batch_size == 0:
-      options.batch_size = 10
+      options.batch_size = 5
     resumedb = os.path.join(options.local_folder,
                             "%s-restored.sqlite" % options.email)
     if options.noresume:
@@ -1233,7 +1484,7 @@ def main(argv):
     for a_message in messages_to_skip_results:
       messages_to_skip.append(a_message[0])
     current_batch_bytes = 5000
-    gbatch = googleapiclient.http.BatchHttpRequest(batch_uri=batch_uri)
+    gbatch = gmail.new_batch_http_request()
     restore_serv = gmail.users().messages()
     if options.fast_restore:
       restore_func = 'insert'
@@ -1243,6 +1494,29 @@ def main(argv):
       restore_params = {'neverMarkSpam': True}
     restore_method = getattr(restore_serv, restore_func)
     max_batch_bytes = 8 * 1024 * 1024
+    # Look for Google Vault XML metadata which contains message labels map
+    vault_label_map = {}
+    if not options.strip_labels:
+      for path, subdirs, files in os.walk(options.local_folder):
+        for filename in files:
+          if filename[-4:].lower() != '.xml':
+            continue
+          file_path = '%s%s%s' % (path, path_divider, filename)
+          print("\nReading Vault labels from %s file %s" % (humansize(file_path), file_path))
+          print("large files may take some time to read...")
+          for _, elem in etree.iterparse(file_path, events=('end',)):
+            if elem.tag == 'Document':
+              labels = ''
+              fileid = None
+              for tag in elem.iter('Tag'):
+                if tag.attrib['TagName'] == 'Labels':
+                  labels = tag.attrib.get('TagValue', '')
+              for file in elem.iter('ExternalFile'):
+                fileid = file.attrib.get('FileName', None)
+              if fileid and labels:
+                vault_label_map[fileid] = labels
+              elem.clear()  # keep memory usage down on very large files
+    # Look for and restore mbox files
     for path, subdirs, files in os.walk(options.local_folder):
       for filename in files:
         if filename[-4:].lower() != '.mbx' and \
@@ -1250,33 +1524,55 @@ def main(argv):
           continue
         file_path = '%s%s%s' % (path, path_divider, filename)
         print("\nRestoring from %s file %s..." % (humansize(file_path), file_path))
-        print("large files may take some time to open.")
-        mbox = mailbox.mbox(file_path)
-        restore_count = len(list(mbox.items()))
+        mbox = fmbox.fmbox(file_path)
         current = 0
-        for message in mbox:
+        while True:
           current += 1
           message_marker = '%s-%s' % (file_path, current)
           # shorten request_id to prevent content-id errors
           request_id = hashlib.md5(message_marker.encode('utf-8')).hexdigest()[:25]
           if request_id in messages_to_skip:
+            rewrite_line(' skipping already restored message #%s' % (current,))
+            try:
+              mbox.skip()
+            except StopIteration:
+              break
             continue
-          labels = message['X-Gmail-Labels']
-          if labels != None and labels != '' and not options.strip_labels:
-            mybytes, encoding = email.header.decode_header(labels)[0]
+          try:
+            message = mbox.next()
+          except StopIteration:
+            break
+          mbox_pct = percentage(mbox._mbox_position, mbox._mbox_size)
+          deleted = options.vault
+          labels = options.label_restored
+          if not options.strip_labels:
+            if vault_label_map:
+              mbox_from = message.get_from()
+              mbox_fileid = mbox_from.split('@')[0]
+              labels_str = vault_label_map.get(mbox_fileid, '')
+            else:
+              labels_str = message.get_header('X-Gmail-Labels')
+            mybytes, encoding = email.header.decode_header(labels_str)[0]
             if encoding != None:
               try:
-                labels = mybytes.decode(encoding)
+                labels_str = mybytes.decode(encoding)
               except UnicodeDecodeError:
                 pass
-            labels = labels.split(',')
-          else:
-            labels = []
-          if options.label_restored:
-            for restore_label in options.label_restored:
-              labels.append(restore_label)
+            labels = labels_str.split(',')
           cased_labels = []
           for label in labels:
+            if label == '' or label == None:
+              labels.remove(label)
+              continue
+            elif label == '^OPENED':
+              labels.remove(label)
+              continue
+            elif label == '^DELETED':
+              deleted = True
+              labels.remove(label)
+              continue
+            elif label[0] == '^':
+              label = label[1:]
             if label.lower() in reserved_labels:
               label = label.upper()
               if label in ['CHAT', 'CHATS']:
@@ -1288,22 +1584,22 @@ def main(argv):
             else:
               cased_labels.append(label)
           labelIds = labelsToLabelIds(cased_labels)
-          del message['X-Gmail-Labels']
-          del message['X-GM-THRID']
-          rewrite_line(" message %s of %s" % (current, restore_count))
+          rewrite_line(" message %s - %s%%" % (current, mbox_pct))
           full_message = message.as_bytes()
-          body = {'labelIds': labelIds}
+          body = {}
+          if labelIds:
+            body['labelIds'] = labelIds
           b64_message_size = (len(full_message)/3) * 4
+          rewrite_line(" reading message %s... - %s%%" % (current, mbox_pct))
           if b64_message_size > 1 * 1024 * 1024:
             # don't batch/raw >1mb messages, just do single
-            rewrite_line(' restoring single large message (%s/%s)' %
-              (current, restore_count))
+            rewrite_line(" restoring %s message %s - %s%%" % (humansize(b64_message_size),current,mbox_pct))
             media_body = googleapiclient.http.MediaInMemoryUpload(full_message,
-              mimetype='message/rfc822', resumable=True, chunksize=chunksize)
+              mimetype='message/rfc822', resumable=True)
             try:
               response = callGAPI(service=restore_serv, function=restore_func,
                 userId='me', throw_reasons=['invalidArgument',], media_body=media_body, body=body,
-                deleted=options.vault, soft_errors=True, **restore_params)
+                deleted=deleted, soft_errors=True, **restore_params)
               if response == None:
                 continue
               exception = None
@@ -1312,41 +1608,36 @@ def main(argv):
               exception = e
             restored_message(request_id=request_id, response=response,
               exception=None)
-            rewrite_line(' restored single large message (%s/%s)' %
-              (current, restore_count))
+            rewrite_line(" restored single large message (%s)" % (current,))
             continue
           raw_message = base64.urlsafe_b64encode(full_message).decode('utf-8')
           body['raw'] = raw_message
           current_batch_bytes += len(raw_message)
-          for labelId in labelIds:
-            current_batch_bytes += len(labelId)
           if len(gbatch._order) > 0 and current_batch_bytes > max_batch_bytes:
             # this message would put us over max, execute current batch first
-            rewrite_line("restoring %s messages (%s/%s)" %
-              (len(gbatch._order), current, restore_count))
+            rewrite_line(" restoring %s messages %s - %s%%" % (len(gbatch._order), current, mbox_pct))
             callGAPI(gbatch, None, soft_errors=True)
-            gbatch = googleapiclient.http.BatchHttpRequest(batch_uri=batch_uri)
+            gbatch = gmail.new_batch_http_request()
             sqlconn.commit()
             current_batch_bytes = 5000
             largest_in_batch = 0
           gbatch.add(restore_method(userId='me',
             body=body, fields='id',
-            deleted=options.vault, **restore_params),
+            deleted=deleted, **restore_params),
             callback=restored_message,
             request_id=request_id)
           if len(gbatch._order) == options.batch_size:
-            rewrite_line("restoring %s messages (%s/%s)" %
-              (len(gbatch._order), current, restore_count))
+            rewrite_line(" restoring %s messages (%s) - %s%%" % (len(gbatch._order), current, mbox_pct))
             callGAPI(gbatch, None, soft_errors=True)
-            gbatch = googleapiclient.http.BatchHttpRequest(batch_uri=batch_uri)
+            gbatch = gmail.new_batch_http_request()
             sqlconn.commit()
             current_batch_bytes = 5000
             largest_in_batch = 0
         if len(gbatch._order) > 0:
-          rewrite_line("restoring %s messages (%s/%s)" %
-            (len(gbatch._order), current, restore_count))
+          rewrite_line( "restoring %s messages (%s)" % (len(gbatch._order), current,))
           callGAPI(gbatch, None, soft_errors=True)
           sqlconn.commit()
+    print('\ndone!')
     sqlconn.execute('DETACH mbox_resume')
     sqlconn.commit()
 
@@ -1395,7 +1686,7 @@ def main(argv):
       f.close()
       media = googleapiclient.http.MediaFileUpload(
         os.path.join(options.local_folder, message_filename),
-        mimetype='message/rfc822', resumable=True, chunksize=chunksize)
+        mimetype='message/rfc822', resumable=True)
       try:
         callGAPI(service=gmig.archive(), function='insert',
           groupId=options.email, media_body=media, soft_errors=True)
@@ -1424,7 +1715,7 @@ def main(argv):
   # PURGE #
   elif options.action == 'purge':
     if options.batch_size == 0:
-      options.batch_size = 20
+      options.batch_size = 1000
     page_message = 'Got %%total_items%% Message IDs'
     messages_to_process = callGAPIpages(service=gmail.users().messages(),
       function='list', items='messages', page_message=page_message,
@@ -1432,18 +1723,17 @@ def main(argv):
       maxResults=500, fields='nextPageToken,messages/id')
     purge_count = len(messages_to_process)
     purged_messages = 0
-    gbatch = googleapiclient.http.BatchHttpRequest(batch_uri=batch_uri)
+    i = 0
+    purge_chunks = [[]]
     for a_message in messages_to_process:
-      gbatch.add(gmail.users().messages().delete(userId='me',
-        id=a_message['id']), callback=purged_message)
+      purge_chunks[i].append(a_message['id'])
+      if len(purge_chunks[i]) == options.batch_size:
+        i += 1
+        purge_chunks.append([])
       purged_messages += 1
-      if len(gbatch._order) == options.batch_size:
-        callGAPI(gbatch, None, soft_errors=True)
-        gbatch = googleapiclient.http.BatchHttpRequest(batch_uri=batch_uri)
-        rewrite_line("purged %s of %s messages" %
-          (purged_messages, purge_count))
-    if len(gbatch._order) > 0:
-      callGAPI(gbatch, None, soft_errors=True)
+    for purge_chunk in purge_chunks:
+      callGAPI(gmail.users().messages(), function='batchDelete',
+        userId='me', body={'ids': purge_chunk})
       rewrite_line("purged %s of %s messages" % (purged_messages, purge_count))
     print("\n")
 
@@ -1534,7 +1824,7 @@ otaBytesByService,quotaType')
     messages_to_process = callGAPIpages(service=gmail.users().messages(),
       function='list', items='messages', page_message=page_message,
       userId='me', includeSpamTrash=options.spamtrash, q=options.gmail_search,
-      maxItems=500, fields='nextPageToken,messages/id')
+      maxResults=500, fields='nextPageToken,messages/id')
     estimate_path = options.local_folder
     if not os.path.isdir(estimate_path):
       os.mkdir(estimate_path)
@@ -1552,7 +1842,7 @@ otaBytesByService,quotaType')
     estimate_count = len(messages_to_estimate)
     print("GYB needs to estimate %s messages" % estimate_count)
     estimated_messages = 0
-    gbatch = googleapiclient.http.BatchHttpRequest(batch_uri=batch_uri)
+    gbatch = gmail.new_batch_http_request()
     global message_size_estimate
     message_size_estimate = 0
     for a_message in messages_to_estimate:
@@ -1563,7 +1853,7 @@ otaBytesByService,quotaType')
       estimated_messages += 1
       if len(gbatch._order) == options.batch_size:
         callGAPI(gbatch, None)
-        gbatch = googleapiclient.http.BatchHttpRequest(batch_uri=batch_uri)
+        gbatch = gmail.new_batch_http_request()
         rewrite_line("Estimated size %s %s/%s messages" %
           (bytes_to_larger(message_size_estimate), estimated_messages,
           estimate_count))
@@ -1578,7 +1868,6 @@ if __name__ == '__main__':
   if sys.version_info[0] < 3 or sys.version_info[1] < 5:
     print('ERROR: GYB requires Python 3.5 or greater.')
     sys.exit(3)
-  doGYBCheckForUpdates()
   try:
     main(sys.argv[1:])
   except KeyboardInterrupt:
