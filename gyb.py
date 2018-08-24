@@ -24,7 +24,7 @@ global __name__, __author__, __email__, __version__, __license__
 __program_name__ = 'Got Your Back: Gmail Backup'
 __author__ = 'Jay Lee'
 __email__ = 'jay0lee@gmail.com'
-__version__ = '1.1'
+__version__ = '1.11'
 __license__ = 'Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0)'
 __website__ = 'https://git.io/gyb'
 __db_schema_version__ = '6'
@@ -692,7 +692,7 @@ def writeFile(filename, data, mode=u'wb', continueOnError=False, displayError=Tr
     systemErrorExit(6, e)
 
 def doCreateProject():
-  service_account_file = 'oauth2service.json'
+  service_account_file = getProgPath()+'oauth2service.json'
   for a_file in [service_account_file]:
     if os.path.exists(a_file):
       print('File %s already exists. Please delete or rename it before attempting to create another project.' % a_file)
@@ -1140,7 +1140,10 @@ def backup_message(request_id, response, exception):
     message_file_name = "%s.eml" % (response['id'])
     message_time = int(response['internalDate'])/1000
     message_date = time.gmtime(message_time)
-    time_for_sqlite = datetime.datetime.fromtimestamp(message_time)
+    try:
+      time_for_sqlite = datetime.datetime.fromtimestamp(message_time)
+    except (IOError, OverflowError):
+      time_for_sqlite = datetime.datetime.fromtimestamp(86400) # minimal value Win accepts
     message_rel_path = os.path.join(str(message_date.tm_year),
                                     str(message_date.tm_mon),
                                     str(message_date.tm_mday))
@@ -1551,7 +1554,7 @@ def main(argv):
               mbox_fileid = mbox_from.split('@')[0]
               labels_str = vault_label_map.get(mbox_fileid, '')
             else:
-              labels_str = message.get_header('X-Gmail-Labels')
+              labels_str = message.get_header(b'X-Gmail-Labels')
             mybytes, encoding = email.header.decode_header(labels_str)[0]
             if encoding != None:
               try:
