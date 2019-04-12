@@ -44,10 +44,15 @@ thread_msgid_map = {}
 mbox_extensions = ['mbx', 'mbox', 'eml']
 
 import argparse
-from csv import DictReader
+import base64
+import calendar
+import configparser
+import email
+import hashlib
+import datetime
 import importlib
 from io import BytesIO
-import sys
+import json
 import os
 import os.path
 from importlib.metadata import version as lib_version
@@ -56,12 +61,10 @@ import multiprocessing
 from urllib.parse import urlencode, urlparse, parse_qs
 import wsgiref.simple_server
 import wsgiref.util
-import time
-import calendar
-import random
-import struct
 import platform
-import datetime
+import random
+import re
+import shutil
 import socket
 import sqlite3
 import ssl
@@ -73,27 +76,36 @@ from email.utils import (format_datetime,
 import hashlib
 import re
 import string
-from itertools import islice, chain
-import base64
-import json
+import struct
+import sys
+import time
+import urllib
+import webbrowser
 import xml.etree.ElementTree as etree
+import zipfile
+from itertools import chain, islice
 from urllib.parse import urlencode
 import configparser
 import webbrowser
 import threading
 
-import httplib2
-import google.oauth2.service_account
-import google_auth_oauthlib.flow
-import google_auth_httplib2
 import google.oauth2.id_token
+import google.oauth2.service_account
+import google_auth_httplib2
+import google_auth_oauthlib.flow
 import googleapiclient
 from googleapiclient.discovery import build, build_from_document, V2_DISCOVERY_URI
 from googleapiclient.http import MediaIoBaseUpload, BatchHttpRequest
 import googleapiclient.errors
+import httplib2
 
 import fmbox
 import labellang
+
+# if os.name == 'windows' or os.name == 'nt':
+  # import pywintypes
+  # import win32con
+  # import win32file
 
 def getGYBVersion(divider="\n"):
   api_client_ver = lib_version('google-api-python-client')
@@ -133,7 +145,7 @@ def SetupOptionParser(argv):
   parser.add_argument('--email',
     dest='email',
     help='Full email address of user or group to act against')
-  action_choices = ['backup','backup-chat', 'restore', 'restore-group', 'restore-mbox',
+  action_choices = ['backup', 'backup-chat', 'restore', 'restore-group', 'restore-mbox', 'refresh-time'
     'count', 'purge', 'purge-labels', 'print-labels', 'estimate', 'quota', 'reindex', 'revoke',
     'split-mbox', 'create-project', 'delete-projects', 'check-service-account', 'create-label']
   parser.add_argument('--action',
@@ -199,7 +211,7 @@ Account to authenticate.')
     choices=list(range(1,101)),
     default=0, # default of 0 means use per action default
     help='Optional: Sets the number of operations to perform at once.')
-  parser.add_argument('--noresume', 
+  parser.add_argument('--noresume',
     action='store_true',
     help='Optional: On restores, start from beginning. Default is to resume \
 where last restore left off.')
@@ -207,7 +219,12 @@ where last restore left off.')
     dest='refresh',
     action='store_false',
     default=True,
-    help='Optional: On backup, skips refreshing labels for existing message')
+    help='Optional: On backup, skips refreshing labels for existing message and marking deleted messages')
+  parser.add_argument('-z', '--zip',
+    dest='zip',
+    action='store_true',
+    default=False,
+    help='Optional: On backup, create zip archives of each year and month group of emails (changed months only)')
   parser.add_argument('--debug',
     action='store_true',
     dest='debug',
@@ -795,7 +812,7 @@ def callGAPI(service, function, soft_errors=False, throw_reasons=[], retry_reaso
         method = getattr(service, function)(**parameters)
       else:
         method = service
-       
+
       getQuota(method)
 
       return method.execute()
@@ -1492,7 +1509,7 @@ def message_is_backed_up(message_num, sqlcur, sqlconn, backup_folder):
     try:
       sqlcur.execute('''
          SELECT message_filename FROM uids NATURAL JOIN messages
-                where uid = ?''', ((message_num),))
+                where is_deleted <> 1 AND uid = ?''', ((message_num),))
     except sqlite3.OperationalError as e:
       if e.message == 'no such table: messages':
         print("\n\nError: your backup database file appears to be corrupted.")
@@ -1509,7 +1526,7 @@ def message_is_backed_up(message_num, sqlcur, sqlconn, backup_folder):
 def get_db_settings(sqlcur):
   try:
     sqlcur.execute('SELECT name, value FROM settings')
-    db_settings = dict(sqlcur) 
+    db_settings = dict(sqlcur)
     return db_settings
   except sqlite3.OperationalError as e:
     if e.message == 'no such table: settings':
@@ -1517,7 +1534,7 @@ def get_db_settings(sqlcur):
 database schema. Your backup folder database does not have a version."
  % (__db_schema_version__))
       sys.exit(6)
-    else: 
+    else:
       print("%s" % e)
 
 def check_db_settings(db_settings, action, user_email_address):
@@ -1546,9 +1563,9 @@ def convertDB(sqlconn, uidvalidity, oldversion):
         # Convert to schema 3
         sqlconn.executescript('''
           BEGIN;
-          CREATE TABLE uids 
-              (message_num INTEGER, uid INTEGER PRIMARY KEY); 
-          INSERT INTO uids (uid, message_num) 
+          CREATE TABLE uids
+              (message_num INTEGER, uid INTEGER PRIMARY KEY);
+          INSERT INTO uids (uid, message_num)
                SELECT message_num as uid, message_num FROM messages;
           CREATE INDEX labelidx ON labels (message_num);
           CREATE INDEX flagidx ON flags (message_num);
@@ -1557,6 +1574,10 @@ def convertDB(sqlconn, uidvalidity, oldversion):
         # Convert to schema 4
         sqlconn.execute('''
           ALTER TABLE messages ADD COLUMN rfc822_msgid TEXT;
+          ALTER TABLE messages ADD COLUMN is_deleted BOOLEAN DEFAULT 0;
+          UPDATE messages SET is_deleted = 0;
+          CREATE UNIQUE INDEX uididx ON uids (message_num);
+          CREATE UNIQUE INDEX messageidx ON messages (message_num, is_deleted);
         ''')
       if oldversion < '5':
         # Convert to schema 5
@@ -1571,19 +1592,19 @@ def convertDB(sqlconn, uidvalidity, oldversion):
         getMessageIDs(sqlconn, options.local_folder)
         rebuildUIDTable(sqlconn)
       sqlconn.executemany('REPLACE INTO settings (name, value) VALUES (?,?)',
-                        (('uidvalidity',uidvalidity), 
-                         ('db_version', __db_schema_version__)) )   
+                        (('uidvalidity',uidvalidity),
+                         ('db_version', __db_schema_version__)) )
       sqlconn.commit()
   except sqlite3.OperationalError as e:
       print("Conversion error: %s" % e.message)
 
   print("GYB database converted to version %s" % __db_schema_version__)
 
-def getMessageIDs (sqlconn, backup_folder):   
+def getMessageIDs (sqlconn, backup_folder):
   sqlcur = sqlconn.cursor()
   header_parser = email.parser.HeaderParser()
   for message_num, filename in sqlconn.execute('''
-               SELECT message_num, message_filename FROM messages 
+               SELECT message_num, message_filename FROM messages
                       WHERE rfc822_msgid IS NULL'''):
     message_full_filename = os.path.join(backup_folder, filename)
     if os.path.isfile(message_full_filename):
@@ -1593,7 +1614,7 @@ def getMessageIDs (sqlconn, backup_folder):
           'UPDATE messages SET rfc822_msgid = ? WHERE message_num = ?',
                      (msgid, message_num))
   sqlconn.commit()
- 
+
 def rebuildUIDTable(sqlconn):
   pass
 
@@ -1640,10 +1661,13 @@ def initializeDB(sqlconn, email):
        ('db_version', __db_schema_version__))
   sqlconn.execute('''CREATE TABLE messages(message_num INTEGER PRIMARY KEY,
                          message_filename TEXT,
-                         message_internaldate TIMESTAMP);''')
+                         message_internaldate TIMESTAMP,
+                         is_deleted BOOLEAN DEFAULT 0);''')
   sqlconn.execute('''CREATE TABLE labels (message_num INTEGER, label TEXT);''')
   sqlconn.execute('''CREATE TABLE uids (message_num INTEGER, uid TEXT PRIMARY KEY);''')
   sqlconn.execute('''CREATE UNIQUE INDEX labelidx ON labels (message_num, label);''')
+  sqlconn.execute('''CREATE UNIQUE INDEX uididx ON uids (message_num);''')
+  sqlconn.execute('''CREATE UNIQUE INDEX messageidx ON messages (message_num, is_deleted);''')
   sqlconn.commit()
 
 def labelIdsToLabels(labelIds):
@@ -1726,19 +1750,32 @@ def refresh_message(request_id, response, exception):
   if exception is not None:
     raise exception
   else:
+    try:
+      sqlcur.execute(
+        """SELECT message_filename, message_internaldate FROM messages WHERE message_num = ?""", ((response['id']),))
+    except sqlite3.OperationalError as e:
+      if e.message == 'no such table: messages':
+        print("\n\nError: your backup database file appears to be corrupted.")
+      else:
+        print("SQL error:%s" % e)
+      sys.exit(8)
+
+    message_details = sqlcur.fetchall()
+    set_message_file_dates(options.local_folder, message_details)
+
     if 'labelIds' in response:
       labels = labelIdsToLabels(response['labelIds'])
       sqlcur.execute('DELETE FROM current_labels')
       sqlcur.executemany(
            'INSERT INTO current_labels (label) VALUES (?)',
               ((label,) for label in labels))
-      sqlcur.execute("""DELETE FROM labels where message_num = 
+      sqlcur.execute("""DELETE FROM labels where message_num =
                    (SELECT message_num from uids where uid = ?)
                     AND label NOT IN current_labels""", ((response['id']),))
-      sqlcur.execute("""INSERT INTO labels (message_num, label) 
-            SELECT message_num, label from uids, current_labels 
-               WHERE uid = ? AND label NOT IN 
-               (SELECT label FROM labels 
+      sqlcur.execute("""INSERT INTO labels (message_num, label)
+            SELECT message_num, label from uids, current_labels
+               WHERE uid = ? AND label NOT IN
+               (SELECT label FROM labels
                   WHERE message_num = uids.message_num)""",
                   ((response['id']),))
 
@@ -1851,9 +1888,10 @@ def backup_message(request_id, response, exception):
     full_message = base64.urlsafe_b64decode(raw_message)
     with open(message_full_filename, 'wb') as f:
       f.write(full_message)
+    set_message_file_date(message_full_filename, message_time)
     sqlcur.execute("""
              INSERT INTO messages (
-                         message_filename, 
+                         message_filename,
                          message_internaldate) VALUES (?, ?)""",
                         (message_rel_filename,
                          time_for_sqlite))
@@ -1895,6 +1933,214 @@ def bytes_to_larger(myval):
     myval = myval / 1024
     mysize = 'tb'
   return '%.2f%s' % (myval, mysize)
+
+def mark_removed_messages_deleted(sqlcur, sqlconn):
+  """
+  Soft delete messages that are referenced in the messages table but no longer
+  have a uid, probably because they have been deleted (or moved to trash/spam
+  folders).
+  """
+  try:
+    # messages deleted from GMail no longer appear in the uids table if the
+    # db is reindexed
+    sqlcur.execute('''
+        SELECT m.message_num
+        FROM messages m LEFT NATURAL JOIN uids u
+        WHERE (is_deleted = 0 OR is_deleted IS NULL) AND u.uid IS NULL''')
+  except sqlite3.OperationalError as e:
+    if e.message == 'no such table: messages':
+      print("\n\nError: your backup database file appears to be corrupted.")
+    else:
+      print("SQL error:%s" % e)
+    sys.exit(8)
+  sqlresults = sqlcur.fetchall()
+  for x in sqlresults:
+    soft_delete_message(x[0], sqlcur, sqlconn)
+
+def archive_deleted_messages(sqlcur, sqlconn, backup_folder):
+  deleted_folder = os.path.join(backup_folder, "deleted")
+  if not os.path.isdir(deleted_folder):
+      os.mkdir(deleted_folder)
+
+  try:
+    sqlcur.execute("""
+      SELECT message_num, message_filename
+      FROM messages
+      WHERE is_deleted = 1 AND message_filename NOT LIKE ?""", ("deleted%",))
+  except sqlite3.OperationalError as e:
+    if e.message == 'no such table: messages':
+      print("\n\nError: your backup database file appears to be corrupted.")
+    else:
+      print("SQL error:%s" % e)
+    sys.exit(8)
+  sqlresults = sqlcur.fetchall()
+  deleted_count = len(sqlresults)
+
+  if deleted_count > 0:
+    print("GYB needs to move %s messages to deleted" % deleted_count)
+    print("")
+
+    for x in sqlresults:
+      message_num = x[0]
+      filename = x[1]
+      full_filename = os.path.join(backup_folder, filename)
+      deleted_filename = os.path.join(deleted_folder, filename)
+      if os.path.isfile(full_filename):
+        deleted_path = os.path.dirname(deleted_filename)
+        if not os.path.isdir(deleted_path):
+          os.makedirs(deleted_path)
+        shutil.move(full_filename, deleted_filename)
+      else:
+        print("WARNING! file %s does not exist for message %s" % (full_filename, message_num))
+
+      if os.path.isfile(deleted_filename) or not os.path.isfile(full_filename):
+        sqlcur.execute("""
+          UPDATE messages
+          SET message_filename = ?
+          WHERE message_num = ?""", (os.path.join("deleted", filename), message_num))
+        sqlconn.commit()
+
+def get_backed_up_message_ids(sqlcur, sqlconn, backup_folder):
+  try:
+    sqlcur.execute("""
+      SELECT u.uid, m.message_filename, m.message_num
+      FROM messages m NATURAL JOIN uids u
+      WHERE (is_deleted = 0 OR is_deleted IS NULL)""")
+  except sqlite3.OperationalError as e:
+    if e.message == 'no such table: messages':
+      print("\n\nError: your backup database file appears to be corrupted.")
+    else:
+      print("SQL error:%s" % e)
+    sys.exit(8)
+  uids = {}
+  sqlresults = sqlcur.fetchall()
+  for x in sqlresults:
+    uid = str(x[0])
+    filename = x[1]
+    message_num = x[2]
+    full_filename = os.path.join(backup_folder, filename)
+    if not os.path.isfile(full_filename):
+      print("WARNING! file %s does not exist for message %s" % (full_filename, uid))
+    uids[uid] = message_num
+  return uids
+
+def mark_messages_deleted(deleted_uids, backed_up_message_ids, sqlcur, sqlconn, backup_folder):
+  deleted_count = len(deleted_uids)
+  if deleted_count > 0:
+    print("GYB needs to mark %s messages as deleted" % deleted_count)
+
+    for uid in deleted_uids:
+      soft_delete_message(backed_up_message_ids[uid], sqlcur, sqlconn)
+
+    print("marked %s messages as deleted" % (len(deleted_uids)))
+
+def soft_delete_message(message_num, sqlcur, sqlconn):
+  sqlcur.execute("UPDATE messages SET is_deleted = 1 WHERE message_num = ?", (message_num,))
+  # sqlcur.execute("DELETE FROM uids where message_num = ?", (message_num,))
+  sqlcur.execute("DELETE FROM labels where message_num = ?", (message_num,))
+  sqlconn.commit()
+
+def change_file_times(fname, mtime=None, atime=None, ctime=None):
+  os.utime(fname, (atime, mtime))
+  # winmtime = None if mtime == None else pywintypes.Time(mtime)
+  # winatime = None if atime == None else pywintypes.Time(atime)
+  # winctime = None if ctime == None else pywintypes.Time(ctime)
+
+  # winfile = win32file.CreateFile(fname, win32con.GENERIC_WRITE,
+  #   win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE | win32con.FILE_SHARE_DELETE,
+  #   None, win32con.OPEN_EXISTING,
+  #   win32con.FILE_ATTRIBUTE_NORMAL, None)
+  # win32file.SetFileTime(winfile, winctime, winatime, winmtime, True)
+  # winfile.close()
+
+def set_message_file_date(message_full_filename, message_time):
+  mtime = os.path.getmtime(message_full_filename)
+  #print(message_full_filename, " last modified: %s" % time.ctime(mtime))
+  if mtime != message_time:
+    #os.utime(message_full_filename, (time.time(), message_time))
+    change_file_times(message_full_filename, message_time, time.time(), message_time)
+    #print(" updated to: %s" %)
+    #time.ctime(os.path.getmtime(message_full_filename))
+
+def set_message_file_dates(backup_folder, message_details):
+  message_count = len(message_details)
+  if message_count > 0:
+    print("Refreshing modified timestamp on %s messages" % message_count)
+    message_position = 0
+    for message in message_details:
+      full_filename = os.path.join(backup_folder, message[0])
+      if os.path.isfile(full_filename):
+        set_message_file_date(full_filename, time.mktime(message[1].timetuple()))
+        message_position += 1
+      else:
+        print("\nWARNING! message file %s does not exist" % (full_filename,))
+
+      # if message_position % 100:
+        # restart_line()
+        # sys.stdout.write("refreshed modified timestamp on %s of %s messages" % (message_position, message_count))
+        # sys.stdout.flush()
+    rewrite_line("")
+    sys.stdout.write("refreshed modified timestamp on %s of %s messages" % (message_position, message_count))
+    sys.stdout.flush()
+    print("\n")
+
+def create_compressed_archives(backup_folder):
+  if not os.path.isabs(backup_folder):
+    backup_folder = os.path.abspath(backup_folder)
+  (root_path, backup_folder_name) = os.path.split(backup_folder)
+  archive_folder = os.path.join(root_path, "Archives")
+
+  print("Compressing monthly archives for: ", backup_folder)
+  print("Archive_folder: ", archive_folder)
+
+  if not os.path.isdir(archive_folder):
+    os.mkdir(archive_folder)
+
+  for year in os.listdir(backup_folder):
+    if year.isdigit():
+      for month in os.listdir(os.path.join(backup_folder, year)):
+        if month.isdigit():
+          eml_files = set()
+          path_to_archive = os.path.join(backup_folder, year, month)
+          for walk_root, dirs, files in os.walk(path_to_archive):
+            if len(files) > 0:
+              relpath = os.path.relpath(walk_root, root_path)
+              for file_name in files:
+                (name, ext) = os.path.splitext(file_name)
+                if ext == ".eml":
+                  full_file_path = os.path.join(walk_root, file_name)
+                  modified_datetime = datetime.datetime.fromtimestamp(os.path.getmtime(full_file_path))
+                  # remove seconds and milliseconds as zip format does not
+                  # store enough time resolution for comparison
+                  modified_datetime = modified_datetime.replace(second=0, microsecond=0)
+                  eml_files.add((os.path.normcase(os.path.join(relpath, file_name)), modified_datetime, os.path.getsize(full_file_path)))
+            elif len(dirs) == 0:
+              print("Removing empty directory %s" % (walk_root,))
+              os.removedirs(walk_root)
+
+          zip_name = "%s_%04d_%02d" % (backup_folder_name, int(year), int(month))
+          zip_path = os.path.join(archive_folder, zip_name)
+
+          zip_files = set()
+          full_zip_name = zip_path + '.zip'
+          if os.path.isfile(full_zip_name):
+            with zipfile.ZipFile(full_zip_name, 'r') as zip:
+              for zip_file in zip.infolist():
+                if not zip_file.is_dir():
+                  modified_datetime = datetime.datetime(*zip_file.date_time)
+                  # remove seconds and milliseconds as zip format does not store
+                  # enough time resolution for comparison
+                  modified_datetime = modified_datetime.replace(second=0, microsecond=0)
+                  zip_files.add((os.path.normcase(zip_file.filename), modified_datetime, zip_file.file_size))
+
+          has_differences = len(zip_files) == 0 or len(eml_files ^ zip_files) > 0
+          # print(eml_files)^ zip_files)
+
+          if has_differences and len(eml_files) > 0:
+            base_path = os.path.join(backup_folder_name, year, month)
+            print("Creating archive: %s.zip" % (zip_path,))
+            shutil.make_archive(zip_path, "zip", root_path, base_path)
+  print("")
 
 def getSizeOfMessages(messages, gmail):
   def _estimate_message(request_id, response, exception):
@@ -2126,7 +2372,7 @@ def main(argv):
   if not os.path.isdir(options.local_folder):
     if options.action in ['backup', 'backup-chat']:
       os.mkdir(options.local_folder)
-    elif options.action in ['restore', 'restore-group', 'restore-mbox']:
+    elif options.action in ['restore', 'restore-group', 'restore-mbox', 'refresh-time']:
       print('ERROR: Folder %s does not exist. Cannot restore.'
         % options.local_folder)
       sys.exit(3)
@@ -2134,7 +2380,7 @@ def main(argv):
   sqldbfile = os.path.join(options.local_folder, 'msg-db.sqlite')
   # Do we need to initialize a new database?
   newDB = not os.path.isfile(sqldbfile)
-  
+
   # If we're not doing a estimate or if the db file actually exists we open it
   # (creates db if it doesn't exist)
   if options.action not in ['count', 'purge', 'purge-labels', 'print-labels',
@@ -2158,11 +2404,15 @@ def main(argv):
       check_db_settings(db_settings, options.action, options.email)
       if options.action not in ['restore', 'restore-group', 'restore-mbox']:
         if db_settings['db_version'] <  __db_schema_version__:
+          # backup the sqlite db file before converting it's schema
+          shutil.copy(sqldbfile, sqldbfile + '.bak')
           convertDB(sqlconn, db_settings['db_version'])
           db_settings = get_db_settings(sqlcur)
         if options.action == 'reindex':
           getMessageIDs(sqlconn, options.local_folder)
           rebuildUIDTable(sqlconn)
+          # messages deleted from GMail no longer appear in the uids table
+          mark_removed_messages_deleted(sqlcur, sqlconn)
           sqlconn.commit()
           sys.exit(0)
     else:
@@ -2222,10 +2472,24 @@ def main(argv):
       sqlconn.commit()
       rewrite_line("backed up %s of %s messages" %
         (backed_up_messages, backup_count))
-    print("\n")
- 
+    print("")
+
     if not options.refresh:
       messages_to_refresh = []
+    else:
+      backed_up_message_ids = get_backed_up_message_ids(sqlcur, sqlconn, options.local_folder)
+      # get all messages, ignoreing the optional search so that we do not delete too much
+      all_messages = callGAPIpages(service=gmail.users().messages(),
+        function='list', items='messages', page_message=page_message, maxResults=500,
+        userId='me', includeSpamTrash=options.spamtrash, q='',
+        fields='nextPageToken,messages/id')
+      all_message_ids = set(message['id'] for message in all_messages)
+      # find local messages that are not in the server set
+      deleted_uids = list(set(backed_up_message_ids.keys()) - all_message_ids)
+      mark_messages_deleted(deleted_uids, backed_up_message_ids, sqlcur, sqlconn, options.local_folder)
+      mark_removed_messages_deleted(sqlcur, sqlconn)
+      archive_deleted_messages(sqlcur, sqlconn, options.local_folder)
+
     refreshed_messages = 0
     refresh_count = len(messages_to_refresh)
     print("GYB needs to refresh %s messages" % refresh_count)
@@ -2251,6 +2515,9 @@ def main(argv):
       rewrite_line("refreshed %s of %s messages" %
         (refreshed_messages, refresh_count))
     print("\n")
+
+    if options.zip:
+      create_compressed_archives(options.local_folder)
 
   # BACKUP-CHAT
   elif options.action == 'backup-chat':
@@ -2309,8 +2576,8 @@ def main(argv):
   # RESTORE #
   elif options.action == 'restore':
     if options.batch_size == 0:
-      options.batch_size = 1
-    resumedb = os.path.join(options.local_folder, 
+    resumedb = os.path.join(options.local_folder,
+      options.batch_size = 15
                             "%s-restored.sqlite" % options.email)
     if options.noresume:
       try:
@@ -2320,16 +2587,17 @@ def main(argv):
       except IOError:
         pass
     sqlcur.execute('ATTACH ? as resume', (resumedb,))
-    sqlcur.executescript('''CREATE TABLE IF NOT EXISTS resume.restored_messages 
-                        (message_num INTEGER PRIMARY KEY); 
+    sqlcur.executescript('''CREATE TABLE IF NOT EXISTS resume.restored_messages
+                        (message_num INTEGER PRIMARY KEY);
                         CREATE TEMP TABLE skip_messages (message_num INTEGER \
                           PRIMARY KEY);''')
     sqlcur.execute('''INSERT INTO skip_messages SELECT message_num from \
       restored_messages''')
     sqlcur.execute('''SELECT message_num, message_internaldate, \
       message_filename FROM messages
-                      WHERE message_num NOT IN skip_messages ORDER BY \
-                      message_internaldate DESC''') # All messages
+                      WHERE message_num NOT IN skip_messages \
+                      AND (is_deleted = 0 OR is_deleted IS NULL)\
+                      ORDER BY message_internaldate DESC''') # All messages
 
     messages_to_restore_results = sqlcur.fetchall()
     restore_count = len(messages_to_restore_results)
@@ -2559,7 +2827,7 @@ def main(argv):
                 cased_labels.append('Chats_restored')
                 continue
               if label == 'DRAFTS':
-                label = 'DRAFT' 
+                label = 'DRAFT'
               cased_labels.append(label)
             else:
               cased_labels.append(label)
@@ -2724,7 +2992,7 @@ def main(argv):
     sqlconn.execute('DETACH resume')
     sqlconn.commit()
 
-  # COUNT 
+  # COUNT
   elif options.action == 'count':
     if options.batch_size == 0:
       options.batch_size = 10
@@ -2885,6 +3153,20 @@ otaBytesByService,quotaType')
     labels = options.label_restored
     for label in labels:
       createLabel(label)
+
+  # REFRESH EML FILE TIMES #
+  elif options.action == 'refresh-time':
+    try:
+      sqlcur.execute("""SELECT message_filename, message_internaldate FROM messages""")
+    except sqlite3.OperationalError as e:
+      if e.message == 'no such table: messages':
+        print("\n\nError: your backup database file appears to be corrupted.")
+      else:
+        print("SQL error:%s" % e)
+      sys.exit(8)
+
+    message_details = sqlcur.fetchall()
+    set_message_file_dates(options.local_folder, message_details)
 
 if __name__ == '__main__':
   if sys.version_info[0] < 3 or sys.version_info[1] < 7:
