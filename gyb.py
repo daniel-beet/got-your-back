@@ -24,7 +24,7 @@ global __name__, __author__, __email__, __version__, __license__
 __program_name__ = 'Got Your Back: Gmail Backup'
 __author__ = 'Jay Lee'
 __email__ = 'jay0lee@gmail.com'
-__version__ = '1.21'
+__version__ = '1.22'
 __license__ = 'Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0)'
 __website__ = 'https://git.io/gyb'
 __db_schema_version__ = '6'
@@ -194,6 +194,10 @@ method breaks Gmail deduplication and threading.')
     action='store_true',
     dest='version',
     help='print GYB version and quit')
+  parser.add_argument('--short-version',
+    action='store_true',
+    dest='shortversion',
+    help='Just print version and quit')
   parser.add_argument('--help',
     action='help',
     help='Display this message.')
@@ -386,7 +390,7 @@ def doGYBCheckForUpdates(forceCheck=False, debug=False):
     if isinstance(release_data, list):
       release_data = release_data[0] # only care about latest release
     if not isinstance(release_data, dict) or u'tag_name' not in release_data:
-      _gamLatestVersionNotAvailable()
+      _LatestVersionNotAvailable()
       return
     latest_version = release_data[u'tag_name']
     if latest_version[0].lower() == u'v':
@@ -780,12 +784,12 @@ def _createClientSecretsOauth2service(httpObj, projectId):
 
 PROJECTID_PATTERN = re.compile(r'^[a-z][a-z0-9-]{4,28}[a-z0-9]$')
 PROJECTID_FORMAT_REQUIRED = u'[a-z][a-z0-9-]{4,28}[a-z0-9]'
-def _getLoginHintProjects(printShowCmd):
+def _getLoginHintProjects():
   login_hint = options.email
   pfilter = options.gmail_search
   if not pfilter:
-    pfilter = u'current' if not printShowCmd else u'id:gyb-project-*'
-  elif printShowCmd and pfilter.lower() == u'all':
+    pfilter = u'current'
+  elif pfilter.lower() == u'all':
     pfilter = None
   elif pfilter.lower() == u'gyb':
     pfilter = u'id:gyb-project-*'
@@ -814,7 +818,7 @@ def _getProjects(crm, pfilter):
   return callGAPIpages(crm.projects(), u'list', u'projects', filter=pfilter)
 
 def doDelProjects():
-  crm, _, login_hint, projects = _getLoginHintProjects(False)
+  crm, _, login_hint, projects = _getLoginHintProjects()
   count = len(projects)
   print('User: {0}, Delete {1} Projects'.format(login_hint, count))
   i = 0
@@ -954,8 +958,9 @@ def doCheckServiceAccount():
   all_scopes_pass = True
   for scope in all_scopes:
     try:
+      oauth2service_file = getProgPath()+'oauth2service.json'
       credentials = oauth2client.service_account.ServiceAccountCredentials.from_json_keyfile_name(
-          'oauth2service.json', [scope])
+          oauth2service_file, [scope])
       credentials = credentials.create_delegated(options.email)
       credentials.user_agent = getGYBVersion(' | ')
       credentials.refresh(httplib2.Http())
@@ -1336,6 +1341,9 @@ def main(argv):
   doGYBCheckForUpdates(debug=options.debug)
   if options.version:
     print(getGYBVersion())
+    sys.exit(0)
+  if options.shortversion:
+    sys.stdout.write(__version__)
     sys.exit(0)
   if options.local_folder == 'XXXuse-email-addressXXX':
     options.local_folder = "GYB-GMail-Backup-%s" % options.email
@@ -1948,7 +1956,7 @@ otaBytesByService,quotaType')
       disable_ssl_certificate_validation = True
     http = httplib2.Http(
       disable_ssl_certificate_validation=disable_ssl_certificate_validation)
-    if os.path.isfile(getProgPath()+'debug.gam'):
+    if options.debug:
       httplib2.debuglevel = 4
     sys.stdout.write('This authorizaton token will self-destruct in 3...')
     sys.stdout.flush()
