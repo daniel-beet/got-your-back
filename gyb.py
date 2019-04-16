@@ -24,7 +24,7 @@ global __name__, __author__, __email__, __version__, __license__
 __program_name__ = 'Got Your Back: Gmail Backup'
 __author__ = 'Jay Lee'
 __email__ = 'jay0lee@gmail.com'
-__version__ = '1.22'
+__version__ = '1.23'
 __license__ = 'Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0)'
 __website__ = 'https://git.io/gyb'
 __db_schema_version__ = '6'
@@ -36,7 +36,7 @@ allLabelIds = dict()
 allLabels = dict()
 reserved_labels = ['inbox', 'spam', 'trash', 'unread', 'starred', 'important',
   'sent', 'draft', 'chat', 'chats', 'migrated', 'todo', 'todos', 'buzz',
-  'bin', 'allmail', 'drafts']
+  'bin', 'allmail', 'drafts', 'archived']
 
 import argparse
 import sys
@@ -190,6 +190,11 @@ method breaks Gmail deduplication and threading.')
     dest='debug',
     help='Turn on verbose debugging and connection information \
 (troubleshooting)')
+  parser.add_argument('--memory-limit',
+    dest='memory_limit',
+    type=int,
+    default=0,
+    help='Limit in megabytes batch requests allow. Prevents memory issues.')
   parser.add_argument('--version',
     action='store_true',
     dest='version',
@@ -1261,14 +1266,6 @@ def purged_message(request_id, response, exception):
   if exception is not None:
     raise exception
 
-def estimate_message(request_id, response, exception):
-  global message_size_estimate
-  if exception is not None:
-    raise exception
-  else:
-    this_message_size = int(response['sizeEstimate'])
-    message_size_estimate += this_message_size
-
 def backup_message(request_id, response, exception):
   if exception is not None:
     print(exception)
@@ -1334,6 +1331,42 @@ def bytes_to_larger(myval):
     myval = myval / 1024
     mysize = 'tb'
   return '%.2f%s' % (myval, mysize)
+
+def getSizeOfMessages(messages, gmail):
+  def _estimate_message(request_id, response, exception):
+    nonlocal running_size, message_sizes
+    if exception is not None:
+      raise exception
+    else:
+      message_size = int(response['sizeEstimate'])
+      message_id = response['id']
+      running_size += message_size
+      message_sizes[message_id] = message_size
+
+  estimate_count = len(messages)
+  estimated_messages = 0
+  gbatch = gmail.new_batch_http_request()
+  message_sizes = {}
+  running_size = 0
+  for a_message in messages:
+    gbatch.add(gmail.users().messages().get(userId='me',
+      id=a_message, format='minimal',
+        fields='id,sizeEstimate'),
+        callback=_estimate_message)
+    estimated_messages += 1
+    if len(gbatch._order) == options.batch_size:
+      callGAPI(gbatch, None)
+      gbatch = gmail.new_batch_http_request()
+      rewrite_line("Estimated size %s %s/%s messages" %
+        (bytes_to_larger(running_size), estimated_messages,
+         estimate_count))
+  if len(gbatch._order) > 0:
+    callGAPI(gbatch, None)
+    rewrite_line("Estimated size %s %s/%s messages" %
+      (bytes_to_larger(running_size), estimated_messages,
+       estimate_count))
+  print('\n')
+  return message_sizes
 
 def main(argv):
   global options, gmail
@@ -1438,20 +1471,27 @@ def main(argv):
       (len(messages_to_process) - len(messages_to_backup)))
     backup_count = len(messages_to_backup)
     print("GYB needs to backup %s messages" % backup_count)
+    if options.memory_limit:
+      memory_limit = options.memory_limit * 1024 * 1024
+      message_sizes = getSizeOfMessages(messages_to_backup, gmail)
+      request_size = 0
     backed_up_messages = 0
     gbatch = gmail.new_batch_http_request()
     for a_message in messages_to_backup:
+      if options.memory_limit:
+        request_size += message_sizes[a_message]
+      if len(gbatch._order) == options.batch_size or (options.memory_limit and request_size >= memory_limit):
+        callGAPI(gbatch, None, soft_errors=True)
+        gbatch = gmail.new_batch_http_request()
+        sqlconn.commit()
+        request_size = message_sizes[a_message]
+        rewrite_line("backed up %s of %s messages" %
+          (backed_up_messages, backup_count))
       gbatch.add(gmail.users().messages().get(userId='me',
         id=a_message, format='raw',
         fields='id,labelIds,internalDate,raw'),
         callback=backup_message)
       backed_up_messages += 1
-      if len(gbatch._order) == options.batch_size:
-        callGAPI(gbatch, None, soft_errors=True)
-        gbatch = gmail.new_batch_http_request()
-        sqlconn.commit()
-        rewrite_line("backed up %s of %s messages" %
-          (backed_up_messages, backup_count))
     if len(gbatch._order) > 0:
       callGAPI(gbatch, None, soft_errors=True)
       sqlconn.commit()
@@ -1716,13 +1756,14 @@ def main(argv):
                 labels_str = mybytes.decode(encoding)
               except UnicodeDecodeError:
                 pass
-            labels = labels_str.split(',')
+            labels = labels_str.strip().split(',')
           cased_labels = []
           for label in labels:
             if label == '' or label == None:
               labels.remove(label)
               continue
-            elif label == '^OPENED':
+            label = label.strip()
+            if label == '^OPENED':
               labels.remove(label)
               continue
             elif label == '^DELETED':
@@ -1806,6 +1847,8 @@ def main(argv):
       gmig = buildGAPIObject('groupsmigration')
     else:
       gmig = buildGAPIServiceObject('groupsmigration')
+    max_message_size = gmig._rootDesc['resources']['archive']['methods']['insert']['mediaUpload']['maxSize']
+    print('Groups supports restore of messages up to %s' % max_message_size)
     resumedb = os.path.join(options.local_folder,
                             "%s-restored.sqlite" % options.email)
     if options.noresume:
@@ -1850,8 +1893,8 @@ def main(argv):
         callGAPI(service=gmig.archive(), function='insert',
           groupId=options.email, media_body=media, soft_errors=True)
       except googleapiclient.errors.MediaUploadSizeError as e:
-        print('\n ERROR: Message is to large for groups (16mb limit). \
-          Skipping...')
+        print('\n ERROR: Message is to large for groups (%smb limit). \
+          Skipping...' % max_message_size)
         continue
       sqlconn.execute(
          'INSERT OR IGNORE INTO restored_messages (message_num) VALUES (?)',
@@ -1998,30 +2041,7 @@ otaBytesByService,quotaType')
         messages_to_estimate.append(message_num['id'])
     print("GYB already has a backup of %s messages" %
       (len(messages_to_process) - len(messages_to_estimate)))
-    estimate_count = len(messages_to_estimate)
-    print("GYB needs to estimate %s messages" % estimate_count)
-    estimated_messages = 0
-    gbatch = gmail.new_batch_http_request()
-    global message_size_estimate
-    message_size_estimate = 0
-    for a_message in messages_to_estimate:
-      gbatch.add(gmail.users().messages().get(userId='me',
-        id=a_message, format='minimal',
-        fields='sizeEstimate'),
-        callback=estimate_message)
-      estimated_messages += 1
-      if len(gbatch._order) == options.batch_size:
-        callGAPI(gbatch, None)
-        gbatch = gmail.new_batch_http_request()
-        rewrite_line("Estimated size %s %s/%s messages" %
-          (bytes_to_larger(message_size_estimate), estimated_messages,
-          estimate_count))
-    if len(gbatch._order) > 0:
-      callGAPI(gbatch, None)
-      rewrite_line("Estimated size %s %s/%s messages" %
-        (bytes_to_larger(message_size_estimate), estimated_messages,
-        estimate_count))
-    print('\n')
+    getSizeOfMessages(messages_to_estimate, gmail)
 
 if __name__ == '__main__':
   if sys.version_info[0] < 3 or sys.version_info[1] < 5:
@@ -2029,6 +2049,12 @@ if __name__ == '__main__':
     sys.exit(3)
   try:
     main(sys.argv[1:])
+  except MemoryError:
+    print('''ERROR: GYB ran out of memory during %s. Try the following:
+
+1) Use a 64-bit version of GYB. It has access to more memory.
+2) Add "--memory-limit 100" argument to GYB to reduce memory usage.''' % options.action)
+    sys.exit(5)
   except KeyboardInterrupt:
     try:
       sqlconn.commit()
