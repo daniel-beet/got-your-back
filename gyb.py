@@ -24,7 +24,7 @@ global __name__, __author__, __email__, __version__, __license__
 __program_name__ = 'Got Your Back: Gmail Backup'
 __author__ = 'Jay Lee'
 __email__ = 'jay0lee@gmail.com'
-__version__ = '1.23'
+__version__ = '1.24'
 __license__ = 'Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0)'
 __website__ = 'https://git.io/gyb'
 __db_schema_version__ = '6'
@@ -1484,7 +1484,8 @@ def main(argv):
         callGAPI(gbatch, None, soft_errors=True)
         gbatch = gmail.new_batch_http_request()
         sqlconn.commit()
-        request_size = message_sizes[a_message]
+        if options.memory_limit:
+          request_size = message_sizes[a_message]
         rewrite_line("backed up %s of %s messages" %
           (backed_up_messages, backup_count))
       gbatch.add(gmail.users().messages().get(userId='me',

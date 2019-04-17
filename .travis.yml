@@ -1,35 +1,33 @@
 if: tag IS blank
-env:
-  - ARCH=x86_64
-    WIX_ARCH=x64
+
 matrix:
   include:
   - os: linux
     dist: xenial
     language: python
-    python: "3.7.3"
+    python: 3.7.3
+    env:
+      ARCH=x86_64
   - os: osx
     language: generic
     osx_image: xcode10.1
-  - os: windows
-    language: shell
+    env:
+      ARCH=x86_64
   - os: windows
     language: shell
     env:
-      - CINST_ARGS=--forcex86
-      - ARCH=x86
-      - WIX_ARCH=x86
+      ARCH=x86_64
+      CINST_ARGS=""
+      WIX_ARCH=x64
+  - os: windows
+    language: shell
+    env:
+      CINST_ARGS=--forcex86
+      ARCH=x86
+      WIX_ARCH=x86
 
 before_install:
-- if [[ "$TRAVIS_OS_NAME" == "windows" ]]; then
-    powershell Install-WindowsFeature Net-Framework-Core;
-    cinst $CINST_ARGS python3;
-    export PATH=$PATH:/c/Python37/scripts;
-    cinst -y wixtoolset;
-  elif [[ "$TRAVIS_OS_NAME" == "osx" ]]; then
-    brew upgrade python3;
-    export PATH=/usr/local/opt/python/libexec/bin:$PATH;
-  fi
+- source travis/$TRAVIS_OS_NAME-$ARCH-before-install.sh
 - pip install pyinstaller
 
 install:
@@ -41,7 +39,8 @@ install:
     cp gyb-setup.bat gyb;
     cp license.rtf gyb;
     GYB_ARCHIVE=gyb-$GYBVERSION-windows-$ARCH.zip;
-    /c/Program\ Files/7-Zip/7z.exe a -tzip $GYB_ARCHIVE gyb -xr!.svn; /c/Program\ Files\ \(x86\)/WiX\ Toolset\ v3.11/bin/candle.exe -arch $WIX_ARCH windows-gyb.wxs;
+    /c/Program\ Files/7-Zip/7z.exe a -tzip $GYB_ARCHIVE gyb -xr!.svn;
+    /c/Program\ Files\ \(x86\)/WiX\ Toolset\ v3.11/bin/candle.exe -arch $WIX_ARCH windows-gyb.wxs;
     /c/Program\ Files\ \(x86\)/Wix\ Toolset\ v3.11/bin/light.exe -ext /c/Program\ Files\ \(x86\)/WiX\ Toolset\ v3.11/bin/WixUIExtension.dll windows-gyb.wixobj -o gyb-$GYBVERSION-windows-$ARCH.msi || true;
     rm *.wixpdb;
   else
@@ -50,7 +49,22 @@ install:
   fi
 
 script:
-- gyb/gyb --version
+- mkdir gyb-test
+- cp -rf gyb/* gyb-test/
+- export jid="$(cut -d'.' -f2 <<<"$TRAVIS_JOB_NUMBER")"
+- export gyb_user="gyb-travis-$jid@pdl.jaylee.us"
+- export gyb_user_file="gyb-test/$gyb_user.cfg"
+  #- cat travis/cfg_template.json | python travis/svars-write.py &> /dev/null
+- echo "This job will use $gyb_user"
+- gyb-test/gyb --version
+  #- gyb-test/gyb --action purge --email $gyb_user
+  #- gyb-test/gyb --action purge-labels --email $gyb_user
+  #- gyb-test/gyb --action restore --local-folder travis/samples/gyb-format --email $gyb_user
+  #- gyb-test/gyb --action count --email $gyb_user
+  #- gyb-test/gyb --action quota --email $gyb_user
+  #- gyb-test/gyb --action estimate --email $gyb_user
+  #- gyb-test/gyb --action backup --email $gyb_user
+- rm -rf gyb-test
 
 before_deploy:
 - export TRAVIS_TAG="preview"
