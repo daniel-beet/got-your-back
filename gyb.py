@@ -24,7 +24,7 @@ global __name__, __author__, __email__, __version__, __license__
 __program_name__ = 'Got Your Back: Gmail Backup'
 __author__ = 'Jay Lee'
 __email__ = 'jay0lee@gmail.com'
-__version__ = '1.26'
+__version__ = '1.27'
 __license__ = 'Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0)'
 __website__ = 'https://git.io/gyb'
 __db_schema_version__ = '6'
@@ -685,8 +685,9 @@ def getCRMService(login_hint):
 
 GYB_PROJECT_APIS = 'https://raw.githubusercontent.com/jay0lee/got-your-back/master/project-apis.txt?'
 def enableProjectAPIs(project_name, checkEnabled):
+  global httpc
   global anonhttpc
-  s, c = httpc.request(GYB_PROJECT_APIS, 'GET')
+  s, c = anonhttpc.request(GYB_PROJECT_APIS, 'GET')
   if s.status < 200 or s.status > 299:
     print('ERROR: tried to retrieve %s but got %s' % (GYB_PROJECT_APIS, s.status))
     sys.exit(0)
