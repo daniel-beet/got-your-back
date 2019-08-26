@@ -24,13 +24,13 @@ global __name__, __author__, __email__, __version__, __license__
 __program_name__ = 'Got Your Back: Gmail Backup'
 __author__ = 'Jay Lee'
 __email__ = 'jay0lee@gmail.com'
-__version__ = '1.27'
+__version__ = '1.28'
 __license__ = 'Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0)'
 __website__ = 'https://git.io/gyb'
 __db_schema_version__ = '6'
 __db_schema_min_version__ = '6'        #Minimum for restore
 
-global extra_args, options, allLabelIds, allLabels, gmail, reserved_labels, httpc, anonhttpc
+global extra_args, options, allLabelIds, allLabels, gmail, reserved_labels
 extra_args = {'prettyPrint': False}
 allLabelIds = dict()
 allLabels = dict()
@@ -75,22 +75,6 @@ import googleapiclient.discovery
 import googleapiclient.errors
 
 import fmbox
-
-# override httplib2 so we can force TLS versions
-def _build_ssl_context(disable_ssl_certificate_validation, ca_certs, cert_file=None, key_file=None):
-  context = ssl.SSLContext(httplib2.DEFAULT_TLS_VERSION)
-  context.verify_mode = ssl.CERT_REQUIRED
-  context.check_hostname = True
-  if options.ca_file:
-    ca_certs = options.ca_file
-  context.load_verify_locations(ca_certs)
-  if cert_file:
-    context.load_cert_chain(cert_file, key_file)
-  if options.tls_min_version:
-    context.minimum_version = getattr(ssl.TLSVersion, options.tls_min_version)
-  if options.tls_max_version:
-    context.maximum_version = getattr(ssl.TLSVersion, options.tls_max_version)
-  return context
 
 # Override some oauth2client.tools strings
 oauth2client.tools._FAILED_START_MESSAGE = """
@@ -269,7 +253,6 @@ class cmd_flags(object):
     self.auth_host_port = [8080, 9090]
 
 def requestOAuthAccess():
-  global httpc
   if options.use_admin:
     auth_as = options.use_admin
   else:
@@ -374,14 +357,14 @@ https://www.googleapis.com/auth/gmail.labels',
     FLOW = oauth2client.client.flow_from_clientsecrets(CLIENT_SECRETS,
       scope=scopes, message=MISSING_CLIENT_SECRETS_MESSAGE, login_hint=auth_as)
     credentials = oauth2client.tools.run_flow(flow=FLOW, storage=storage,
-      flags=flags, http=httpc)
+      flags=flags, http=_createHttpObj())
 
 #
 # Read a file
 #
-def readFile(filename, mode=u'rb', continueOnError=False, displayError=True, encoding=None):
+def readFile(filename, mode='rb', continueOnError=False, displayError=True, encoding=None):
   try:
-    if filename != u'-':
+    if filename != '-':
       if not encoding:
         with open(os.path.expanduser(filename), mode) as f:
           return f.read()
@@ -405,8 +388,7 @@ def doGYBCheckForUpdates(forceCheck=False, debug=False):
 
   def _LatestVersionNotAvailable():
     if forceCheck:
-      systemErrorExit(4, u'GYB Latest Version information not available')
-  global anonhttpc
+      systemErrorExit(4, 'GYB Latest Version information not available')
   last_update_check_file = os.path.join(getProgPath(), 'lastcheck.txt')
   current_version = __version__
   now_time = calendar.timegm(time.gmtime())
@@ -417,9 +399,10 @@ def doGYBCheckForUpdates(forceCheck=False, debug=False):
     if last_check_time > now_time-604800:
       return
     check_url = check_url + '/latest' # latest full release
-  headers = {u'Accept': u'application/vnd.github.v3.text+json'}
+  headers = {'Accept': 'application/vnd.github.v3.text+json'}
+  anonhttpc = _createHttpObj()
   try:
-    (_, c) = anonhttpc.request(check_url, u'GET', headers=headers)
+    (_, c) = anonhttpc.request(check_url, 'GET', headers=headers)
     try:
       release_data = json.loads(c.decode('utf-8'))
     except ValueError:
@@ -427,25 +410,25 @@ def doGYBCheckForUpdates(forceCheck=False, debug=False):
       return
     if isinstance(release_data, list):
       release_data = release_data[0] # only care about latest release
-    if not isinstance(release_data, dict) or u'tag_name' not in release_data:
+    if not isinstance(release_data, dict) or 'tag_name' not in release_data:
       _LatestVersionNotAvailable()
       return
-    latest_version = release_data[u'tag_name']
-    if latest_version[0].lower() == u'v':
+    latest_version = release_data['tag_name']
+    if latest_version[0].lower() == 'v':
       latest_version = latest_version[1:]
     if forceCheck or (latest_version > current_version):
       print('Version Check:\n Current: {0}\n Latest: {1}'.format(current_version, latest_version))
     if latest_version <= current_version:
       writeFile(last_update_check_file, str(now_time), continueOnError=True, displayError=forceCheck)
       return
-    announcement = release_data.get(u'body_text', u'No details about this release')
-    sys.stderr.write(u'\nGYB %s release notes:\n\n' % latest_version)
+    announcement = release_data.get('body_text', 'No details about this release')
+    sys.stderr.write('\nGYB %s release notes:\n\n' % latest_version)
     sys.stderr.write(announcement)
     try:
       print('\n\nHit CTRL+C to visit the GYB website and download the latest release or wait 15 seconds to continue with this boring old version. GYB won\'t bother you with this announcement for 1 week or you can create a file named noupdatecheck.txt in the same location as gyb.py or gyb.exe and GYB won\'t ever check for updates.')
       time.sleep(15)
     except KeyboardInterrupt:
-      webbrowser.open(release_data[u'html_url'])
+      webbrowser.open(release_data['html_url'])
       print('GYB exiting for update...')
       sys.exit(0)
     writeFile(last_update_check_file, str(now_time), continueOnError=True, displayError=forceCheck)
@@ -473,7 +456,6 @@ def getAPIScope(api):
     return ['https://www.googleapis.com/auth/drive.appdata']
 
 def buildGAPIObject(api):
-  global httpc
   if options.use_admin:
     auth_as = options.use_admin
   else:
@@ -492,7 +474,7 @@ def buildGAPIObject(api):
     config.optionxform = str
     config.read(os.path.join(getProgPath(), 'extra-args.txt'))
     extra_args.update(dict(config.items('extra-args')))
-  httpc = credentials.authorize(httpc)
+  httpc = credentials.authorize(_createHttpObj())
   version = getAPIVer(api)
   try:
     return googleapiclient.discovery.build(api, version, http=httpc, cache_discovery=False)
@@ -510,7 +492,7 @@ def buildGAPIObject(api):
       raise
 
 def buildGAPIServiceObject(api, soft_errors=False):
-  global extra_args, httpc
+  global extra_args
   if options.use_admin:
     auth_as = options.use_admin
   else:
@@ -528,7 +510,7 @@ def buildGAPIServiceObject(api, soft_errors=False):
     config.optionxform = str
     config.read(getGamPath()+'extra-args.txt')
     extra_args.update(dict(config.items('extra-args')))
-  httpc = credentials.authorize(httpc)
+  httpc = credentials.authorize(_createHttpObj())
   version = getAPIVer(api)
   try:
     return googleapiclient.discovery.build(api, version, http=httpc, cache_discovery=False)
@@ -665,28 +647,27 @@ def percentage(part, whole):
   return '{0:.2f}'.format(100 * float(part)/float(whole))
 
 def getCRMService(login_hint):
-  global httpc
   scope = 'https://www.googleapis.com/auth/cloud-platform'
   client_id = '297408095146-fug707qsjv4ikron0hugpevbrjhkmsk7.apps.googleusercontent.com'
   client_secret = 'qM3dP8f_4qedwzWQE1VR4zzU'
   flow = oauth2client.client.OAuth2WebServerFlow(client_id=client_id,
                     client_secret=client_secret, scope=scope, redirect_uri=oauth2client.client.OOB_CALLBACK_URN,
-                    access_type=u'online', response_type=u'code', login_hint=login_hint)
+                    access_type='online', response_type='code', login_hint=login_hint)
   storage_dict = {}
-  storage = DictionaryStorage(storage_dict, u'credentials')
+  storage = DictionaryStorage(storage_dict, 'credentials')
   flags = cmd_flags()
   if os.path.isfile(os.path.join(getProgPath(), 'nobrowser.txt')):
     flags.noauth_local_webserver = True
   credentials = oauth2client.tools.run_flow(flow=flow, storage=storage, flags=flags, http=httpc)
-  httpc = credentials.authorize(httpc)
-  return googleapiclient.discovery.build('cloudresourcemanager', u'v1',
+  httpc = credentials.authorize(_createHttpObj())
+  return googleapiclient.discovery.build('cloudresourcemanager', 'v1',
       http=httpc, cache_discovery=False,
       discoveryServiceUrl=googleapiclient.discovery.V2_DISCOVERY_URI)
 
 GYB_PROJECT_APIS = 'https://raw.githubusercontent.com/jay0lee/got-your-back/master/project-apis.txt?'
 def enableProjectAPIs(project_name, checkEnabled):
-  global httpc
-  global anonhttpc
+  httpc = _createHttpObj()
+  anonhttpc = _createHttpObj()
   s, c = anonhttpc.request(GYB_PROJECT_APIS, 'GET')
   if s.status < 200 or s.status > 299:
     print('ERROR: tried to retrieve %s but got %s' % (GYB_PROJECT_APIS, s.status))
@@ -704,14 +685,14 @@ def enableProjectAPIs(project_name, checkEnabled):
           print(' API %s already enabled...' % enabled['serviceName'])
           apis.remove(enabled['serviceName'])
         else:
-          print(' API %s (non-GYB) is enabled (which is fine)' % enabled[u'serviceName'])
+          print(' API %s (non-GYB) is enabled (which is fine)' % enabled['serviceName'])
   for api in apis:
     while True:
       print(' enabling API %s...' % api)
       try:
-        callGAPI(serveman.services(), u'enable',
+        callGAPI(serveman.services(), 'enable',
                  throw_reasons=['failedPrecondition'],
-                 serviceName=api, body={u'consumerId': project_name})
+                 serviceName=api, body={'consumerId': project_name})
         break
       except googleapiclient.errors.HttpError as e:
         print('\nThere was an error enabling %s. Please resolve error as described below:' % api)
@@ -720,7 +701,7 @@ def enableProjectAPIs(project_name, checkEnabled):
         print
         input('Press enter once resolved and we will try enabling the API again.')
 
-def writeFile(filename, data, mode=u'wb', continueOnError=False, displayError=True):
+def writeFile(filename, data, mode='wb', continueOnError=False, displayError=True):
   if isinstance(data, str):
     data = data.encode('utf-8')
   try:
@@ -737,33 +718,33 @@ def writeFile(filename, data, mode=u'wb', continueOnError=False, displayError=Tr
 def _createClientSecretsOauth2service(projectId):
 
   def _checkClientAndSecret(client_id, client_secret):
-    global anonhttpc
-    url = u'https://www.googleapis.com/oauth2/v4/token'
-    post_data = {u'client_id': client_id, u'client_secret': client_secret,
-                 u'code': u'ThisIsAnInvalidCodeOnlyBeingUsedToTestIfClientAndSecretAreValid',
-                 u'redirect_uri': u'urn:ietf:wg:oauth:2.0:oob', u'grant_type': u'authorization_code'}
+    url = 'https://www.googleapis.com/oauth2/v4/token'
+    post_data = {'client_id': client_id, 'client_secret': client_secret,
+                 'code': 'ThisIsAnInvalidCodeOnlyBeingUsedToTestIfClientAndSecretAreValid',
+                 'redirect_uri': 'urn:ietf:wg:oauth:2.0:oob', 'grant_type': 'authorization_code'}
     headers = {'Content-type': 'application/x-www-form-urlencoded'}
-    _, content = anonhttpc.request(url, u'POST', urlencode(post_data), headers=headers)
+    anonhttpc = _createHttpObj()
+    _, content = anonhttpc.request(url, 'POST', urlencode(post_data), headers=headers)
     try:
       content = json.loads(content.decode('utf-8'))
     except ValueError:
       print('Unknown error: %s' % content)
       return False
-    if not u'error' in content or not u'error_description' in content:
+    if not 'error' in content or not 'error_description' in content:
       print('Unknown error: %s' % content)
       return False
-    if content[u'error'] == u'invalid_grant':
+    if content['error'] == 'invalid_grant':
       return True
-    if content[u'error_description'] == 'The OAuth client was not found.':
+    if content['error_description'] == 'The OAuth client was not found.':
       print('Ooops!!\n\n%s\n\nIs not a valid client ID. Please make sure you are following the directions exactly and that there are no extra spaces in your client ID.' % client_id)
       return False
-    if content[u'error_description'] == u'Unauthorized':
+    if content['error_description'] == 'Unauthorized':
       print('Ooops!!\n\n%s\n\nIs not a valid client secret. Please make sure you are following the directions exactly and that there are no extra spaces in your client secret.' % client_secret)
       return False
     print('Unknown error: %s' % content)
     return False
 
-  console_credentials_url = u'https://console.developers.google.com/apis/credentials/consent?createClient&project=%s' % projectId
+  console_credentials_url = 'https://console.developers.google.com/apis/credentials/consent?createClient&project=%s' % projectId
   while True:
     print('''Please go to:
 
@@ -777,18 +758,18 @@ def _createClientSecretsOauth2service(projectId):
 # If you use Firefox to copy the Client ID and Secret, the data has leading and trailing newlines
 # The first input will get the leading newline, thus we have to issue another input to get the data
 # If the newlines are not present, the data is correctly read with the first input
-    client_id = input(u'Enter your Client ID: ').strip()
+    client_id = input('Enter your Client ID: ').strip()
     if not client_id:
       client_id = input().strip()
     print('\nNow go back to your browser and copy your client secret.')
-    client_secret = input(u'Enter your Client Secret: ').strip()
+    client_secret = input('Enter your Client Secret: ').strip()
     if not client_secret:
       client_secret = input().strip()
     client_valid = _checkClientAndSecret(client_id, client_secret)
     if client_valid:
       break
     print()
-  cs_data = u'''{
+  cs_data = '''{
     "installed": {
         "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
         "auth_uri": "https://accounts.google.com/o/oauth2/auth",
@@ -803,31 +784,31 @@ def _createClientSecretsOauth2service(projectId):
   writeFile(client_secrets_file, cs_data, continueOnError=False)
 
 PROJECTID_PATTERN = re.compile(r'^[a-z][a-z0-9-]{4,28}[a-z0-9]$')
-PROJECTID_FORMAT_REQUIRED = u'[a-z][a-z0-9-]{4,28}[a-z0-9]'
+PROJECTID_FORMAT_REQUIRED = '[a-z][a-z0-9-]{4,28}[a-z0-9]'
 def _getLoginHintProjects():
   login_hint = options.email
   pfilter = options.gmail_search
   if not pfilter:
-    pfilter = u'current'
-  elif pfilter.lower() == u'all':
+    pfilter = 'current'
+  elif pfilter.lower() == 'all':
     pfilter = None
-  elif pfilter.lower() == u'gyb':
-    pfilter = u'id:gyb-project-*'
+  elif pfilter.lower() == 'gyb':
+    pfilter = 'id:gyb-project-*'
   elif PROJECTID_PATTERN.match(pfilter):
-    pfilter = u'id:{0}'.format(pfilter)
+    pfilter = 'id:{0}'.format(pfilter)
   else:
     print('ERROR: delete-projects action requires --email and a project --search argument')
     sys.exit(3)
   login_hint = getValidateLoginHint(login_hint)
   crm = getCRMService(login_hint)
   client_secrets_file = os.path.join(getProgPath(), 'client_secrets.json')
-  if pfilter == u'current':
-    cs_data = readFile(client_secrets_file, mode=u'rb', continueOnError=True, displayError=True, encoding=None)
+  if pfilter == 'current':
+    cs_data = readFile(client_secrets_file, mode='rb', continueOnError=True, displayError=True, encoding=None)
     if not cs_data:
-      systemErrorExit(14, u'Your client secrets file:\n\n%s\n\nis missing. Please recreate the file.' % client_secrets_file)
+      systemErrorExit(14, 'Your client secrets file:\n\n%s\n\nis missing. Please recreate the file.' % client_secrets_file)
     try:
       cs_json = json.loads(cs_data)
-      projects = [{u'projectId': cs_json[u'installed'][u'project_id']}]
+      projects = [{'projectId': cs_json['installed']['project_id']}]
     except (ValueError, IndexError, KeyError):
       print('The format of your client secrets file:\n\n%s\n\nis incorrect. Please recreate the file.' % client_secrets_file)
   else:
@@ -835,7 +816,7 @@ def _getLoginHintProjects():
   return (crm, login_hint, projects)
 
 def _getProjects(crm, pfilter):
-  return callGAPIpages(crm.projects(), u'list', u'projects', filter=pfilter)
+  return callGAPIpages(crm.projects(), 'list', 'projects', filter=pfilter)
 
 def doDelProjects():
   crm, login_hint, projects = _getLoginHintProjects()
@@ -844,76 +825,72 @@ def doDelProjects():
   i = 0
   for project in projects:
     i += 1
-    projectId = project[u'projectId']
-    callGAPI(crm.projects(), u'delete', projectId=projectId, soft_errors=True)
+    projectId = project['projectId']
+    callGAPI(crm.projects(), 'delete', projectId=projectId, soft_errors=True)
     print('  Project: {0} Deleted ({1}/{2})'.format(projectId, i, count))
 
 def doCreateProject():
-  global httpc
   service_account_file = os.path.join(getProgPath(), 'oauth2service.json')
   client_secrets_file = os.path.join(getProgPath(), 'client_secrets.json')
   for a_file in [service_account_file, client_secrets_file]:
     if os.path.exists(a_file):
       print('File %s already exists. Please delete or rename it before attempting to create another project.' % a_file)
       sys.exit(5)
-  if not options.email:
-    print('ERROR: the --email argument is required')
-    sys.exit(3)
   login_hint = options.email
-  login_domain = login_hint[login_hint.find(u'@')+1:]
+  login_domain = login_hint[login_hint.find('@')+1:]
   crm = getCRMService(login_hint)
-  project_id = u'gyb-project'
+  project_id = 'gyb-project'
   for i in range(3):
-    project_id += u'-%s' % ''.join(random.choice(string.digits + string.ascii_lowercase) for i in range(3))
-  project_name = u'project:%s' % project_id
-  body = {u'projectId': project_id, u'name': u'Got Your Back Project'}
+    project_id += '-%s' % ''.join(random.choice(string.digits + string.ascii_lowercase) for i in range(3))
+  project_name = 'project:%s' % project_id
+  body = {'projectId': project_id, 'name': 'Got Your Back Project'}
   while True:
     create_again = False
-    print('Creating project "%s"...' % body[u'name'])
-    create_operation = callGAPI(crm.projects(), u'create',
+    print('Creating project "%s"...' % body['name'])
+    create_operation = callGAPI(crm.projects(), 'create',
                                 body=body)
-    operation_name = create_operation[u'name']
+    operation_name = create_operation['name']
     time.sleep(5) # Google recommends always waiting at least 5 seconds
     for i in range(1, 5):
       print('Checking project status...')
-      status = callGAPI(crm.operations(), u'get',
+      status = callGAPI(crm.operations(), 'get',
                         name=operation_name)
-      if u'error' in status:
-        if status[u'error'].get(u'message', u'') == u'No permission to create project in organization':
+      if 'error' in status:
+        if status['error'].get('message', '') == 'No permission to create project in organization':
           print('Hmm... Looks like you have no rights to your Google Cloud Organization.')
           print('Attempting to fix that...')
-          getorg = callGAPI(crm.organizations(), u'search',
-                            body={u'filter': u'domain:%s' % login_domain})
+          getorg = callGAPI(crm.organizations(), 'search',
+                            body={'filter': 'domain:%s' % login_domain})
           try:
-            organization = getorg[u'organizations'][0][u'name']
+            organization = getorg['organizations'][0]['name']
             print('Your organization name is %s' % organization)
           except (KeyError, IndexError):
             print('you have no rights to create projects for your organization and you don\'t seem to be a super admin! Sorry, there\'s nothing more I can do.')
             sys.exit(3)
-          org_policy = callGAPI(crm.organizations(), u'getIamPolicy',
+          org_policy = callGAPI(crm.organizations(), 'getIamPolicy',
                                 resource=organization, body={})
-          if u'bindings' not in org_policy:
-            org_policy[u'bindings'] = []
+          if 'bindings' not in org_policy:
+            org_policy['bindings'] = []
             print('Looks like no one has rights to your Google Cloud Organization. Attempting to give you create rights...')
           else:
             print('The following rights seem to exist:')
-            for a_policy in org_policy[u'bindings']:
-              if u'role' in a_policy:
-                print(' Role: %s' % a_policy[u'role'])
-              if u'members' in a_policy:
+            for a_policy in org_policy['bindings']:
+              if 'role' in a_policy:
+                print(' Role: %s' % a_policy['role'])
+              if 'members' in a_policy:
                 print(' Members:')
-                for member in a_policy[u'members']:
+                for member in a_policy['members']:
                   print('  %s' % member)
               print
-          my_role = u'roles/resourcemanager.projectCreator'
+          my_role = 'roles/resourcemanager.projectCreator'
           print('Giving %s the role of %s...' % (login_hint, my_role))
-          org_policy[u'bindings'].append({u'role': my_role, u'members': [u'user:%s' % login_hint]})
-          callGAPI(crm.organizations(), u'setIamPolicy',
-                   resource=organization, body={u'policy': org_policy})
+          org_policy['bindings'].append({'role': my_role, 'members': ['user:%s' % login_hint]})
+          callGAPI(crm.organizations(), 'setIamPolicy',
+                   resource=organization, body={'policy': org_policy})
           create_again = True
           break
         try:
-          if status[u'error'][u'details'][0][u'violations'][0][u'description'] == u'Callers must accept Terms of Service':
+          if status['error']['details'][0]['violations'][0]['description'] == 'Callers must accept Terms of Service':
             print('''Please go to:
 https://console.cloud.google.com/start
 and accept the Terms of Service (ToS). As soon as you've accepted the ToS popup, you can return here and press enter.''')
@@ -924,31 +901,31 @@ and accept the Terms of Service (ToS). As soon as you've accepted the ToS popup,
           pass
         print(status)
         sys.exit(1)
-      if status.get(u'done', False):
+      if status.get('done', False):
         break
       sleep_time = i ** 2
       print('Project still being created. Sleeping %s seconds' % sleep_time)
       time.sleep(sleep_time)
     if create_again:
       continue
-    if not status.get(u'done', False):
+    if not status.get('done', False):
       print('Failed to create project: %s' % status)
       sys.exit(1)
-    elif u'error' in status:
-      print(status[u'error'])
+    elif 'error' in status:
+      print(status['error'])
       sys.exit(2)
     break
   enableProjectAPIs(project_name, False)
-  iam = googleapiclient.discovery.build(u'iam', u'v1', http=httpc,
+  iam = googleapiclient.discovery.build('iam', 'v1', http=_createHttpObj(),
           cache_discovery=False,
           discoveryServiceUrl=googleapiclient.discovery.V2_DISCOVERY_URI)
   print('Creating Service Account')
-  service_account = callGAPI(iam.projects().serviceAccounts(), u'create',
-                             name=u'projects/%s' % project_id,
-                             body={u'accountId': project_id, u'serviceAccount': {u'displayName': u'GYB Project Service Account'}})
-  key = callGAPI(iam.projects().serviceAccounts().keys(), u'create',
-                 name=service_account['name'], body={'privateKeyType': 'TYPE_GOOGLE_CREDENTIALS_FILE', 'keyAlgorithm': u'KEY_ALG_RSA_2048'})
-  oauth2service_data = base64.b64decode(key[u'privateKeyData'])
+  service_account = callGAPI(iam.projects().serviceAccounts(), 'create',
+                             name='projects/%s' % project_id,
+                             body={'accountId': project_id, 'serviceAccount': {'displayName': 'GYB Project Service Account'}})
+  key = callGAPI(iam.projects().serviceAccounts().keys(), 'create',
+                 name=service_account['name'], body={'privateKeyType': 'TYPE_GOOGLE_CREDENTIALS_FILE', 'keyAlgorithm': 'KEY_ALG_RSA_2048'})
+  oauth2service_data = base64.b64decode(key['privateKeyData'])
   writeFile(service_account_file, oauth2service_data, continueOnError=False)
   _createClientSecretsOauth2service(project_id)
   sa_url = 'https://console.developers.google.com/iam-admin/serviceaccounts/project?project=%s' % project_id
@@ -964,9 +941,10 @@ and accept the Terms of Service (ToS). As soon as you've accepted the ToS popup,
   print('That\'s it! Your GYB Project is created and ready to use.')
 
 API_SCOPE_MAPPING = {
-  u'drive': ['https://www.googleapis.com/auth/drive.appdata',],
-  u'gmail': ['https://mail.google.com/',],
-  u'groupsmigration': ['https://www.googleapis.com/auth/apps.groups.migration',],
+  'email': ['https://www.googleapis.com/auth/userinfo.email'],
+  'drive': ['https://www.googleapis.com/auth/drive.appdata',],
+  'gmail': ['https://mail.google.com/',],
+  'groupsmigration': ['https://www.googleapis.com/auth/apps.groups.migration',],
 }
 def doCheckServiceAccount():
   all_scopes = []
@@ -976,26 +954,32 @@ def doCheckServiceAccount():
         all_scopes.append(scope)
   all_scopes.sort()
   all_scopes_pass = True
+  oa2 = googleapiclient.discovery.build('oauth2', 'v1', _createHttpObj())
   for scope in all_scopes:
     try:
       oauth2service_file = os.path.join(getProgPath(), 'oauth2service.json')
       credentials = oauth2client.service_account.ServiceAccountCredentials.from_json_keyfile_name(
-          oauth2service_file, [scope])
+          oauth2service_file, [scope, 'https://www.googleapis.com/auth/userinfo.email'])
       credentials = credentials.create_delegated(options.email)
       credentials.user_agent = getGYBVersion(' | ')
-      credentials.refresh(httplib2.Http())
-      result = u'PASS'
+      credentials.refresh(_createHttpObj())
+      granted_scopes = callGAPI(oa2, 'tokeninfo', access_token=credentials.access_token)
+      if scope in granted_scopes['scope'].split(' ') and \
+         granted_scopes.get('email', '').lower() == options.email.lower():
+        result = 'PASS'
+      else:
+        result = 'FAIL'
     except httplib2.ServerNotFoundError as e:
       print(e)
       sys.exit(4)
     except oauth2client.client.HttpAccessTokenRefreshError:
-      result = u'FAIL'
+      result = 'FAIL'
       all_scopes_pass = False
     print(' Scope: {0:60} {1}'.format(scope, result))
   if all_scopes_pass:
     print('\nAll scopes passed!\nService account %s is fully authorized.' % credentials.client_id)
     return
-  user_domain = options.email[options.email.find(u'@')+1:]
+  user_domain = options.email[options.email.find('@')+1:]
   scopes_failed = '''SOME SCOPES FAILED! Please go to:
 
 https://admin.google.com/%s/AdminHome?#OGX:ManageOauthClients
@@ -1330,6 +1314,14 @@ def backup_message(request_id, response, exception):
            INSERT INTO labels (message_num, label) VALUES (?, ?)""",
                               (message_num, label))
 
+def _createHttpObj(cache=None):
+  http_args = {'cache': cache}
+  if 'tls_maximum_version' in options:
+    http_args['tls_maximum_version'] = options.tls_maximum_version
+  if 'tls_minimum_version' in options:
+    http_args['tls_minimum_version'] = options.tls_minimum_version
+  return httplib2.Http(**http_args)
+
 def bytes_to_larger(myval):
   myval = int(myval)
   mysize = 'b'
@@ -1384,28 +1376,31 @@ def getSizeOfMessages(messages, gmail):
   return message_sizes
 
 def main(argv):
-  global options, gmail, httpc, anonhttpc
+  global options, gmail
   options = SetupOptionParser(argv)
-  httplib2._build_ssl_context = _build_ssl_context
-  httpc = httplib2.Http()
-  anonhttpc = httplib2.Http()
+  if options.debug:
+    httplib2.debuglevel = 4
   doGYBCheckForUpdates(debug=options.debug)
   if options.version:
     print(getGYBVersion())
     print('Path: %s' % getProgPath())
     print(ssl.OPENSSL_VERSION)
-    httpc = httplib2.Http()
-    httpc.request('https://www.googleapis.com')
-    cipher_name, tls_ver, _ = httpc.connections['https:www.googleapis.com'].sock.cipher()
+    anonhttpc = _createHttpObj()
+    anonhttpc.request('https://www.googleapis.com')
+    cipher_name, tls_ver, _ = anonhttpc.connections['https:www.googleapis.com'].sock.cipher()
     print('www.googleapis.com connects using %s %s' % (tls_ver, cipher_name))
     sys.exit(0)
   if options.shortversion:
     sys.stdout.write(__version__)
     sys.exit(0)
+  if options.action == 'split-mbox':
+    print('split-mbox is no longer necessary and is deprecated. Mbox file size should not impact restore performance in this version.')
+    sys.exit(1)
+  if not options.email:
+    print('ERROR: --email is required.')
+    sys.exit(1)
   if options.local_folder == 'XXXuse-email-addressXXX':
     options.local_folder = "GYB-GMail-Backup-%s" % options.email
-  if options.debug:
-    httplib2.debuglevel = 4
   if options.action == 'create-project':
     doCreateProject()
     sys.exit(0)
@@ -1415,12 +1410,6 @@ def main(argv):
   elif options.action == 'check-service-account':
     doCheckServiceAccount()
     sys.exit(0)
-  elif options.action == 'split-mbox':
-    print('split-mbox is no longer necessary and is deprecated. Mbox file size should not impact restore performance in this version.')
-    sys.exit(0)
-  if not options.email:
-    print('ERROR: --email is required.')
-    sys.exit(1)
   if not options.service_account:  # 3-Legged OAuth
     requestOAuthAccess()
     if not doesTokenMatchEmail():
@@ -1679,6 +1668,7 @@ def main(argv):
       callGAPI(gbatch, None, soft_errors=True)
       sqlconn.commit()
     print("\n")
+    sqlconn.commit()
     sqlconn.execute('DETACH resume')
     sqlconn.commit()
 
@@ -1763,6 +1753,8 @@ def main(argv):
             message = mbox.next()
           except StopIteration:
             break
+          if not message.get_header(b'from', case_insensitive=True):
+            message.set_headers({b'From': b'Not Set <not@set.net>'})
           mbox_pct = percentage(mbox._mbox_position, mbox._mbox_size)
           deleted = options.vault
           labels = options.label_restored
@@ -1801,7 +1793,7 @@ def main(argv):
                 cased_labels.append('Chats_restored')
                 continue
               if label == 'DRAFTS':
-                label = u'DRAFT' 
+                label = 'DRAFT' 
               cased_labels.append(label)
             else:
               cased_labels.append(label)
@@ -1957,9 +1949,10 @@ def main(argv):
         purge_chunks.append([])
       purged_messages += 1
     for purge_chunk in purge_chunks:
-      callGAPI(gmail.users().messages(), function='batchDelete',
-        userId='me', body={'ids': purge_chunk})
-      rewrite_line("purged %s of %s messages" % (purged_messages, purge_count))
+      if purge_chunk: # make sure we actually have some IDs
+        callGAPI(gmail.users().messages(), function='batchDelete',
+          userId='me', body={'ids': purge_chunk})
+        rewrite_line("purged %s of %s messages" % (purged_messages, purge_count))
     print("\n")
 
   # PURGE-LABELS #
@@ -2034,7 +2027,7 @@ otaBytesByService,quotaType')
     sys.stdout.write('boom!\n')
     sys.stdout.flush()
     try:
-      credentials.revoke(httpc)
+      credentials.revoke(_createHttpObj())
     except oauth2client.client.TokenRevokeError:
       print('Error')
       os.remove(oauth2file)
