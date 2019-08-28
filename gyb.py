@@ -24,7 +24,7 @@ global __name__, __author__, __email__, __version__, __license__
 __program_name__ = 'Got Your Back: Gmail Backup'
 __author__ = 'Jay Lee'
 __email__ = 'jay0lee@gmail.com'
-__version__ = '1.29'
+__version__ = '1.30'
 __license__ = 'Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0)'
 __website__ = 'https://git.io/gyb'
 __db_schema_version__ = '6'
@@ -65,42 +65,45 @@ import configparser
 import webbrowser
 
 import httplib2
-import oauth2client.client
-import oauth2client.file
 import google.oauth2.service_account
+import google_auth_oauthlib.flow
 import google_auth_httplib2
-from oauth2client.contrib.dictionary_storage import DictionaryStorage
-import oauth2client.tools
+import google.oauth2.id_token
 import googleapiclient
 import googleapiclient.discovery
 import googleapiclient.errors
 
 import fmbox
 
-# Override some oauth2client.tools strings
-oauth2client.tools._FAILED_START_MESSAGE = """
-Failed to start a local webserver listening on either port 8080
-or port 8090. Please check your firewall settings and locally
-running programs that may be blocking or using those ports.
+def getGYBVersion(divider="\n"):
+  return ('Got Your Back %s~DIV~%s~DIV~%s - %s~DIV~Python %s.%s.%s %s-bit \
+%s~DIV~google-api-client %s~DIV~%s %s' % (__version__, __website__, __author__, __email__,
+sys.version_info[0], sys.version_info[1], sys.version_info[2],
+struct.calcsize('P')*8, sys.version_info[3], googleapiclient.__version__, platform.platform(),
+platform.machine())).replace('~DIV~', divider)
 
-Falling back to nobrowser.txt and continuing with
-authorization.
-"""
+USER_AGENT = getGYBVersion(' | ')
+# Override and wrap google_auth_httplib2 request methods so that the
+# user-agent string is inserted into HTTP request headers.
+def _request_with_user_agent(request_method):
+  """Inserts the user-agent header kwargs sent to a method."""
+  def wrapped_request_method(self, *args, **kwargs):
+    if kwargs.get('headers') is not None:
+      if kwargs['headers'].get('user-agent'):
+        if USER_AGENT not in kwargs['headers']['user-agent']:
+          # Save the existing user-agent header and tack on the user-agent.
+          kwargs['headers']['user-agent'] = '%s %s' % (USER_AGENT, kwargs['headers']['user-agent'])
+      else:
+        kwargs['headers']['user-agent'] = USER_AGENT
+    else:
+      kwargs['headers'] = {'user-agent': USER_AGENT}
+    return request_method(self, *args, **kwargs)
+  return wrapped_request_method
 
-oauth2client.tools._BROWSER_OPENED_MESSAGE = """
-Your browser has been opened to visit:
-
-    {address}
-
-If your browser is on a different machine then press CTRL+C and
-create a file called nobrowser.txt in the same folder as GYB.
-"""
-
-oauth2client.tools._GO_TO_LINK_MESSAGE = """
-Go to the following link in your browser:
-
-    {address}
-"""
+google_auth_httplib2.Request.__call__ = _request_with_user_agent(
+  google_auth_httplib2.Request.__call__)
+google_auth_httplib2.AuthorizedHttp.request = _request_with_user_agent(
+  google_auth_httplib2.AuthorizedHttp.request)
 
 def SetupOptionParser(argv):
   tls_choices = []
@@ -245,64 +248,83 @@ def getProgPath():
     # Source code
     return os.path.dirname(os.path.realpath(__file__))
 
-class cmd_flags(object):
-  def __init__(self):
-    self.short_url = True
-    self.noauth_local_webserver = False
-    self.logging_level = 'ERROR'
-    self.auth_host_name = 'localhost'
-    self.auth_host_port = [8080, 9090]
+def getValidOauth2TxtCredentials(force_refresh=False):
+  """Gets OAuth2 credentials which are guaranteed to be fresh and valid."""
+  credentials = getOauth2TxtStorageCredentials()
+  if (credentials and credentials.expired) or force_refresh:
+    retries = 3
+    for n in range(1, retries+1):
+      try:
+        credentials.refresh(google_auth_httplib2.Request(_createHttpObj()))
+        writeCredentials(credentials)
+        break
+      except google.auth.exceptions.RefreshError as e:
+        systemErrorExit(18, str(e))
+      except (google.auth.exceptions.TransportError, httplib2.ServerNotFoundError, RuntimeError) as e:
+        if n != retries:
+          waitOnFailure(n, retries, str(e))
+          continue
+        systemErrorExit(4, str(e))
+  elif credentials is None or not credentials.valid:
+    requestOAuthAccess()
+    credentials = getOauth2TxtStorageCredentials()
+  return credentials
 
-def requestOAuthAccess():
-  if options.use_admin:
-    auth_as = options.use_admin
-  else:
-    auth_as = options.email
-  CLIENT_SECRETS = os.path.join(getProgPath(), 'client_secrets.json')
-  MISSING_CLIENT_SECRETS_MESSAGE = """
-WARNING: Please configure a project
+def getOauth2TxtStorageCredentials():
+  auth_as = options.use_admin if options.use_admin else options.email
+  cfgFile = os.path.join(getProgPath(), '%s.cfg' % auth_as)
+  oauth_string = readFile(cfgFile, continueOnError=True, displayError=False)
+  if not oauth_string:
+    return
+  oauth_data = json.loads(oauth_string)
+  creds = google.oauth2.credentials.Credentials.from_authorized_user_file(cfgFile)
+  creds.token = oauth_data.get('token', oauth_data.get('auth_token', ''))
+  creds._id_token = oauth_data.get('id_token_jwt', oauth_data.get('id_token', None))
+  token_expiry = oauth_data.get('token_expiry', '1970-01-01T00:00:01Z')
+  creds.expiry = datetime.datetime.strptime(token_expiry, '%Y-%m-%dT%H:%M:%SZ')
+  return creds
 
-To make GYB run you will need to populate the client_secrets.json file
-found at:
+def getOAuthClientIDAndSecret():
+  """Retrieves the OAuth client ID and client secret from JSON."""
+  MISSING_CLIENT_SECRETS_MESSAGE = """Please configure a project
 
-   %s
-
-Try running:
+To make GYB run you will need to populate the client_secrets.json file. Try
+running:
 
 %s --action create-project --email %s
 
-""" % (CLIENT_SECRETS, sys.argv[0], options.email)
-  cfgFile = os.path.join(getProgPath(), '%s.cfg' % auth_as)
-  storage = oauth2client.file.Storage(cfgFile)
-  credentials = storage.get()
-  flags = cmd_flags()
-  if os.path.isfile(os.path.join(getProgPath(), 'nobrowser.txt')):
-    flags.noauth_local_webserver = True
-  if credentials is None or credentials.invalid:
-    possible_scopes = ['https://www.googleapis.com/auth/gmail.modify',
-                       # Gmail modify
+""" % (sys.argv[0], options.email)
+  filename = os.path.join(getProgPath(), 'client_secrets.json')
+  cs_data = readFile(filename, continueOnError=True, displayError=True)
+  if not cs_data:
+    systemErrorExit(14, MISSING_CLIENT_SECRETS_MESSAGE)
+  try:
+    cs_json = json.loads(cs_data)
+    client_id = cs_json['installed']['client_id']
+    # chop off .apps.googleusercontent.com suffix as it's not needed
+    # and we need to keep things short for the Auth URL.
+    client_id = re.sub(r'\.apps\.googleusercontent\.com$', '', client_id)
+    client_secret = cs_json['installed']['client_secret']
+  except (ValueError, IndexError, KeyError):
+    systemErrorExit(3, 'the format of your client secrets file:\n\n%s\n\n'
+                    'is incorrect. Please recreate the file.' % filename)
+  return (client_id, client_secret)
 
-                       'https://www.googleapis.com/auth/gmail.readonly',
-                       # Gmail readonly
-
-                       'https://www.googleapis.com/auth/gmail.insert \
-https://www.googleapis.com/auth/gmail.labels',
-                       # insert and labels
-
-                       'https://mail.google.com/',
-                       # Gmail Full Access
-
-                       '',
-                       # No Gmail
-
-                       'https://www.googleapis.com/auth/apps.groups.migration',
-                       # Groups Archive Restore
-
-                       'https://www.googleapis.com/auth/drive.appdata']
-                       # Drive app config (used for quota)
-
-    selected_scopes = [' ', ' ', ' ', '*', ' ', '*', '*']
-    menu = '''Select the actions you wish GYB to be able to perform for %s
+def requestOAuthAccess():
+  auth_as = options.use_admin if options.use_admin else options.email
+  credentials = getOauth2TxtStorageCredentials()
+  if credentials and credentials.valid:
+    return
+  client_id, client_secret = getOAuthClientIDAndSecret()
+  possible_scopes = ['https://www.googleapis.com/auth/gmail.modify', # Gmail modify
+                     'https://www.googleapis.com/auth/gmail.readonly', # Gmail readonly
+                     'https://www.googleapis.com/auth/gmail.insert https://www.googleapis.com/auth/gmail.labels', # insert and labels
+                     'https://mail.google.com/', # Gmail Full Access
+                     '', # No Gmail
+                     'https://www.googleapis.com/auth/apps.groups.migration', # Groups Archive Restore
+                     'https://www.googleapis.com/auth/drive.appdata'] # Drive app config (used for quota)
+  selected_scopes = [' ', ' ', ' ', '*', ' ', '*', '*']
+  menu = '''Select the actions you wish GYB to be able to perform for %s
 
 [%s]  0)  Gmail Backup And Restore - read/write mailbox access
 [%s]  1)  Gmail Backup Only - read-only mailbox access
@@ -315,50 +337,76 @@ https://www.googleapis.com/auth/gmail.labels',
 
       7)  Continue
 '''
-    os.system(['clear', 'cls'][os.name == 'nt'])
-    while True:
-      selection = input(menu % tuple([auth_as]+selected_scopes))
-      try:
-        if int(selection) > -1 and int(selection) <= 6:
-          if selected_scopes[int(selection)] == ' ':
-            selected_scopes[int(selection)] = '*'
-            if int(selection) > -1 and int(selection) <= 4:
-              for i in range(0,5):
-                if i == int(selection):
-                  continue
-                selected_scopes[i] = ' '
-          else:
-            selected_scopes[int(selection)] = ' '
-        elif selection == '7':
-          at_least_one = False
-          for i in range(0, len(selected_scopes)):
-            if selected_scopes[i] in ['*',]:
-              if i == 4:
+  os.system(['clear', 'cls'][os.name == 'nt'])
+  while True:
+    selection = input(menu % tuple([auth_as]+selected_scopes))
+    try:
+      if int(selection) > -1 and int(selection) <= 6:
+        if selected_scopes[int(selection)] == ' ':
+          selected_scopes[int(selection)] = '*'
+          if int(selection) > -1 and int(selection) <= 4:
+            for i in range(0,5):
+              if i == int(selection):
                 continue
-              at_least_one = True
-          if at_least_one:
-            break
-          else:
-            os.system(['clear', 'cls'][os.name == 'nt'])
-            print("YOU MUST SELECT AT LEAST ONE SCOPE!\n")
-            continue
+              selected_scopes[i] = ' '
+        else:
+          selected_scopes[int(selection)] = ' '
+      elif selection == '7':
+        at_least_one = False
+        for i in range(0, len(selected_scopes)):
+          if selected_scopes[i] in ['*',]:
+            if i == 4:
+              continue
+            at_least_one = True
+        if at_least_one:
+          break
         else:
           os.system(['clear', 'cls'][os.name == 'nt'])
-          print('NOT A VALID SELECTION!\n')
+          print("YOU MUST SELECT AT LEAST ONE SCOPE!\n")
           continue
-        os.system(['clear', 'cls'][os.name == 'nt'])
-      except ValueError:
+      else:
         os.system(['clear', 'cls'][os.name == 'nt'])
         print('NOT A VALID SELECTION!\n')
         continue
-    scopes = ['email',]
-    for i in range(0, len(selected_scopes)):
-      if selected_scopes[i] == '*':
-        scopes.append(possible_scopes[i])
-    FLOW = oauth2client.client.flow_from_clientsecrets(CLIENT_SECRETS,
-      scope=scopes, message=MISSING_CLIENT_SECRETS_MESSAGE, login_hint=auth_as)
-    credentials = oauth2client.tools.run_flow(flow=FLOW, storage=storage,
-      flags=flags, http=_createHttpObj())
+      os.system(['clear', 'cls'][os.name == 'nt'])
+    except ValueError:
+      os.system(['clear', 'cls'][os.name == 'nt'])
+      print('NOT A VALID SELECTION!\n')
+      continue
+  scopes = ['email',]
+  for i in range(0, len(selected_scopes)):
+    if selected_scopes[i] == '*':
+      scopes.append(possible_scopes[i])
+  credentials = _run_oauth_flow(client_id, client_secret, scopes, access_type='offline', login_hint=auth_as)
+  writeCredentials(credentials)
+
+def writeCredentials(creds):
+  auth_as = options.use_admin if options.use_admin else options.email
+  cfgFile = os.path.join(getProgPath(), '%s.cfg' % auth_as)
+  creds_data = {
+    'token': creds.token,
+    'refresh_token': creds.refresh_token,
+    'token_uri': creds.token_uri,
+    'client_id': creds.client_id,
+    'client_secret': creds.client_secret,
+    'id_token': creds.id_token,
+    'token_expiry': creds.expiry.strftime('%Y-%m-%dT%H:%M:%SZ'),
+    }
+  expected_iss = ['https://accounts.google.com', 'accounts.google.com']
+  if _getValueFromOAuth('iss', creds) not in expected_iss:
+    systemErrorExit(13, 'Wrong OAuth 2.0 credentials issuer. Got %s, expected one of %s' % (_getValueFromOAuth('iss', creds), ', '.join(expected_iss)))
+  creds_data['decoded_id_token'] = _decodeIdToken(creds)
+  data = json.dumps(creds_data, indent=2, sort_keys=True)
+  writeFile(cfgFile, data)
+
+def _decodeIdToken(credentials=None):
+  credentials = credentials if credentials is not None else getValidOauth2TxtCredentials()
+  httpc = google_auth_httplib2.Request(_createHttpObj())
+  return google.oauth2.id_token.verify_oauth2_token(credentials.id_token, httpc)
+
+def _getValueFromOAuth(field, credentials=None):
+  id_token = _decodeIdToken(credentials)
+  return id_token.get(field, 'Unknown')
 
 #
 # Read a file
@@ -400,7 +448,8 @@ def doGYBCheckForUpdates(forceCheck=False, debug=False):
     if last_check_time > now_time-604800:
       return
     check_url = check_url + '/latest' # latest full release
-  headers = {'Accept': 'application/vnd.github.v3.text+json'}
+  headers = {'Accept': 'application/vnd.github.v3.text+json',
+             'User-Agent': getGYBVersion(' | ')}
   anonhttpc = _createHttpObj()
   try:
     (_, c) = anonhttpc.request(check_url, 'GET', headers=headers)
@@ -457,17 +506,8 @@ def getAPIScope(api):
     return ['https://www.googleapis.com/auth/drive.appdata']
 
 def buildGAPIObject(api):
-  if options.use_admin:
-    auth_as = options.use_admin
-  else:
-    auth_as = options.email
-  oauth2file = os.path.join(getProgPath(), '%s.cfg' % auth_as)
-  storage = oauth2client.file.Storage(oauth2file)
-  credentials = storage.get()
-  if credentials is None or credentials.invalid:
-    doRequestOAuth()
-    credentials = storage.get()
-  credentials.user_agent = getGYBVersion(' | ') 
+  credentials = getValidOauth2TxtCredentials()
+  httpc = google_auth_httplib2.AuthorizedHttp(credentials, _createHttpObj())
   if options.debug:
     extra_args['prettyPrint'] = True
   if os.path.isfile(os.path.join(getProgPath(), 'extra-args.txt')):
@@ -475,7 +515,6 @@ def buildGAPIObject(api):
     config.optionxform = str
     config.read(os.path.join(getProgPath(), 'extra-args.txt'))
     extra_args.update(dict(config.items('extra-args')))
-  httpc = credentials.authorize(_createHttpObj())
   version = getAPIVer(api)
   try:
     return googleapiclient.discovery.build(api, version, http=httpc, cache_discovery=False)
@@ -494,10 +533,7 @@ def buildGAPIObject(api):
 
 def buildGAPIServiceObject(api, soft_errors=False):
   global extra_args
-  if options.use_admin:
-    auth_as = options.use_admin
-  else:
-    auth_as = options.email
+  auth_as = options.use_admin if options.use_admin else options.email
   scopes = getAPIScope(api)
   _, credentials = getSvcAcctCredentials(scopes, auth_as)
   if options.debug:
@@ -570,7 +606,7 @@ def callGAPI(service, function, soft_errors=False, throw_reasons=[], **kwargs):
         return
       else:
         sys.exit(int(http_status))
-    except oauth2client.client.AccessTokenRefreshError as e:
+    except google.auth.exceptions.RefreshError as e:
       sys.stderr.write('Error: Authentication Token Error - %s' % e)
       sys.exit(403)
 
@@ -637,29 +673,70 @@ def getValidateLoginHint(login_hint):
 def percentage(part, whole):
   return '{0:.2f}'.format(100 * float(part)/float(whole))
 
+class ShortURLFlow(google_auth_oauthlib.flow.InstalledAppFlow):
+  def authorization_url(self, **kwargs):
+    long_url, state = super(ShortURLFlow, self).authorization_url(**kwargs)
+    simplehttp = _createHttpObj(timeout=10)
+    url_shortnr = 'https://gyb-shortn.jaylee.us/create'
+    headers = {'Content-Type': 'application/json'}
+    try:
+      resp, content = simplehttp.request(url_shortnr, 'POST', '{"long_url": "%s"}' % long_url, headers=headers)
+    except:
+      return long_url, state
+    if resp.status != 200:
+      return long_url, state
+    try:
+      return json.loads(content).get('short_url', long_url), state
+    except:
+      return long_url, state
+
+MESSAGE_CONSOLE_AUTHORIZATION_PROMPT = '\nGo to the following link in your browser:\n\n\t{url}\n'
+MESSAGE_CONSOLE_AUTHORIZATION_CODE = 'Enter verification code: '
+MESSAGE_LOCAL_SERVER_AUTHORIZATION_PROMPT = '\nYour browser has been opened to visit:\n\n\t{url}\n\nIf your browser is on a different machine then press CTRL+C and delete the oauthbrowser.txt file in the same folder as GYB.\n'
+MESSAGE_LOCAL_SERVER_SUCCESS = 'The authentication flow has completed. You may close this browser window and return to GYB.'
+def _run_oauth_flow(client_id, client_secret, scopes, access_type, login_hint=None):
+  client_config = {
+    'installed': {
+      'client_id': client_id, 'client_secret': client_secret,
+      'redirect_uris': ['http://localhost', 'urn:ietf:wg:oauth:2.0:oob'],
+      'auth_uri': 'https://accounts.google.com/o/oauth2/v2/auth',
+      'token_uri': 'https://oauth2.googleapis.com/token',
+      }
+    }
+  flow = ShortURLFlow.from_client_config(client_config, scopes)
+  kwargs = {'access_type': access_type}
+  if login_hint:
+    kwargs['login_hint'] = login_hint
+  # Needs to be set so oauthlib doesn't puke when Google changes our scopes
+  os.environ['OAUTHLIB_RELAX_TOKEN_SCOPE'] = 'true'
+  if not os.path.isfile(os.path.join(getProgPath(), 'oauthbrowser.txt')):
+    flow.run_console(
+            authorization_prompt_message=MESSAGE_CONSOLE_AUTHORIZATION_PROMPT,
+            authorization_code_message=MESSAGE_CONSOLE_AUTHORIZATION_CODE,
+            **kwargs)
+  else:
+    flow.run_local_server(
+            authorization_prompt_message=MESSAGE_LOCAL_SERVER_AUTHORIZATION_PROMPT,
+            success_message=MESSAGE_LOCAL_SERVER_SUCCESS,
+            **kwargs)
+  return flow.credentials
+
 def getCRMService(login_hint):
   scope = 'https://www.googleapis.com/auth/cloud-platform'
   client_id = '297408095146-fug707qsjv4ikron0hugpevbrjhkmsk7.apps.googleusercontent.com'
   client_secret = 'qM3dP8f_4qedwzWQE1VR4zzU'
-  flow = oauth2client.client.OAuth2WebServerFlow(client_id=client_id,
-                    client_secret=client_secret, scope=scope, redirect_uri=oauth2client.client.OOB_CALLBACK_URN,
-                    access_type='online', response_type='code', login_hint=login_hint)
-  storage_dict = {}
-  storage = DictionaryStorage(storage_dict, 'credentials')
-  flags = cmd_flags()
-  if os.path.isfile(os.path.join(getProgPath(), 'nobrowser.txt')):
-    flags.noauth_local_webserver = True
-  credentials = oauth2client.tools.run_flow(flow=flow, storage=storage, flags=flags, http=_createHttpObj())
-  httpc = credentials.authorize(_createHttpObj())
-  return googleapiclient.discovery.build('cloudresourcemanager', 'v1',
+  credentials = _run_oauth_flow(client_id, client_secret, scope, 'online', login_hint)
+  httpc = google_auth_httplib2.AuthorizedHttp(credentials)
+  crm = googleapiclient.discovery.build('cloudresourcemanager', 'v1',
       http=httpc, cache_discovery=False,
       discoveryServiceUrl=googleapiclient.discovery.V2_DISCOVERY_URI)
+  return (crm, httpc)
 
 GYB_PROJECT_APIS = 'https://raw.githubusercontent.com/jay0lee/got-your-back/master/project-apis.txt?'
-def enableProjectAPIs(project_name, checkEnabled):
-  httpc = _createHttpObj()
+def enableProjectAPIs(project_name, checkEnabled, httpc):
   anonhttpc = _createHttpObj()
-  s, c = anonhttpc.request(GYB_PROJECT_APIS, 'GET')
+  headers = {'User-Agent': getGYBVersion(' | ')}
+  s, c = anonhttpc.request(GYB_PROJECT_APIS, 'GET', headers=headers)
   if s.status < 200 or s.status > 299:
     print('ERROR: tried to retrieve %s but got %s' % (GYB_PROJECT_APIS, s.status))
     sys.exit(0)
@@ -713,7 +790,8 @@ def _createClientSecretsOauth2service(projectId):
     post_data = {'client_id': client_id, 'client_secret': client_secret,
                  'code': 'ThisIsAnInvalidCodeOnlyBeingUsedToTestIfClientAndSecretAreValid',
                  'redirect_uri': 'urn:ietf:wg:oauth:2.0:oob', 'grant_type': 'authorization_code'}
-    headers = {'Content-type': 'application/x-www-form-urlencoded'}
+    headers = {'Content-type': 'application/x-www-form-urlencoded',
+               'User-Agent': getGYBVersion(' | ')}
     anonhttpc = _createHttpObj()
     _, content = anonhttpc.request(url, 'POST', urlencode(post_data), headers=headers)
     try:
@@ -791,7 +869,7 @@ def _getLoginHintProjects():
     print('ERROR: delete-projects action requires --email and a project --search argument')
     sys.exit(3)
   login_hint = getValidateLoginHint(login_hint)
-  crm = getCRMService(login_hint)
+  crm, _ = getCRMService(login_hint)
   client_secrets_file = os.path.join(getProgPath(), 'client_secrets.json')
   if pfilter == 'current':
     cs_data = readFile(client_secrets_file, mode='rb', continueOnError=True, displayError=True, encoding=None)
@@ -833,7 +911,7 @@ def doCreateProject():
       sys.exit(5)
   login_hint = options.email
   login_domain = login_hint[login_hint.find('@')+1:]
-  crm = getCRMService(login_hint)
+  crm, httpc = getCRMService(login_hint)
   project_id = 'gyb-project'
   for i in range(3):
     project_id += '-%s' % ''.join(random.choice(string.digits + string.ascii_lowercase) for i in range(3))
@@ -910,8 +988,8 @@ and accept the Terms of Service (ToS). As soon as you've accepted the ToS popup,
       print(status['error'])
       sys.exit(2)
     break
-  enableProjectAPIs(project_name, False)
-  iam = googleapiclient.discovery.build('iam', 'v1', http=_createHttpObj(),
+  enableProjectAPIs(project_name, False, httpc)
+  iam = googleapiclient.discovery.build('iam', 'v1', http=httpc,
           cache_discovery=False,
           discoveryServiceUrl=googleapiclient.discovery.V2_DISCOVERY_URI)
   print('Creating Service Account')
@@ -972,7 +1050,7 @@ def doCheckServiceAccount():
     except httplib2.ServerNotFoundError as e:
       print(e)
       sys.exit(4)
-    except oauth2client.client.HttpAccessTokenRefreshError:
+    except google.auth.exceptions.RefreshError:
       result = 'FAIL'
       all_scopes_pass = False
     print(' Scope: {0:60} {1}'.format(scope, result))
@@ -1120,10 +1198,7 @@ def humansize(myobject):
   return '%s%s' % (f, suffixes[i])
 
 def doesTokenMatchEmail():
-  if options.use_admin:
-    auth_as = options.use_admin
-  else:
-    auth_as = options.email
+  auth_as = options.use_admin if options.use_admin else options.email
   oa2 = buildGAPIObject('oauth2')
   user_info = callGAPI(service=oa2.userinfo(), function='get',
     fields='email')
@@ -1157,13 +1232,6 @@ def initializeDB(sqlcur, sqlconn, email):
          (('email_address', email),
           ('db_version', __db_schema_version__)))
   sqlconn.commit()
-
-def getGYBVersion(divider="\n"):
-  return ('Got Your Back %s~DIV~%s~DIV~%s - %s~DIV~Python %s.%s.%s %s-bit \
-%s~DIV~%s %s' % (__version__, __website__, __author__, __email__,
-sys.version_info[0], sys.version_info[1], sys.version_info[2],
-struct.calcsize('P')*8, sys.version_info[3], platform.platform(),
-platform.machine())).replace('~DIV~', divider)
 
 def labelIdsToLabels(labelIds):
   global allLabelIds, gmail
@@ -1314,8 +1382,8 @@ def backup_message(request_id, response, exception):
            INSERT INTO labels (message_num, label) VALUES (?, ?)""",
                               (message_num, label))
 
-def _createHttpObj(cache=None):
-  http_args = {'cache': cache}
+def _createHttpObj(cache=None, timeout=None):
+  http_args = {'cache': cache, 'timeout': timeout}
   if 'tls_maximum_version' in options:
     http_args['tls_maximum_version'] = options.tls_maximum_version
   if 'tls_minimum_version' in options:
@@ -1386,7 +1454,8 @@ def main(argv):
     print('Path: %s' % getProgPath())
     print(ssl.OPENSSL_VERSION)
     anonhttpc = _createHttpObj()
-    anonhttpc.request('https://www.googleapis.com')
+    headers = {'User-Agent': getGYBVersion(' | ')}
+    anonhttpc.request('https://www.googleapis.com', headers=headers)
     cipher_name, tls_ver, _ = anonhttpc.connections['https:www.googleapis.com'].sock.cipher()
     print('www.googleapis.com connects using %s %s' % (tls_ver, cipher_name))
     sys.exit(0)
@@ -1411,7 +1480,7 @@ def main(argv):
     doCheckServiceAccount()
     sys.exit(0)
   if not options.service_account:  # 3-Legged OAuth
-    requestOAuthAccess()
+    getValidOauth2TxtCredentials()
     if not doesTokenMatchEmail():
       sys.exit(9)
     gmail = buildGAPIObject('gmail')
@@ -2008,14 +2077,14 @@ otaBytesByService,quotaType')
     if options.service_account:
       print('ERROR: --action revoke does not work with --service-account')
       sys.exit(5)
-    oauth2file = os.path.join(getProgPath(), '%s.cfg' % options.email)
-    storage = oauth2client.file.Storage(oauth2file)
-    credentials = storage.get()
-    try:
-      credentials.revoke_uri = oauth2client.GOOGLE_REVOKE_URI
-    except AttributeError:
-      print('Error: Authorization doesn\'t exist')
-      sys.exit(1)
+    auth_as = options.use_admin if options.use_admin else options.email
+    oauth2file = os.path.join(getProgPath(), '%s.cfg' % auth_as)
+    credentials = getOauth2TxtStorageCredentials()
+    if credentials is None:
+      return
+    simplehttp = _createHttpObj()
+    params = {'token': credentials.refresh_token}
+    revoke_uri = 'https://accounts.google.com/o/oauth2/revoke?%s' % urlencode(params)
     sys.stdout.write('This authorizaton token will self-destruct in 3...')
     sys.stdout.flush()
     time.sleep(1)
@@ -2027,11 +2096,8 @@ otaBytesByService,quotaType')
     time.sleep(1)
     sys.stdout.write('boom!\n')
     sys.stdout.flush()
-    try:
-      credentials.revoke(_createHttpObj())
-    except oauth2client.client.TokenRevokeError:
-      print('Error')
-      os.remove(oauth2file)
+    simplehttp.request(revoke_uri, 'GET')
+    os.remove(oauth2file)
 
   # ESTIMATE #
   elif options.action == 'estimate':
