@@ -24,7 +24,7 @@ global __name__, __author__, __email__, __version__, __license__
 __program_name__ = 'Got Your Back: Gmail Backup'
 __author__ = 'Jay Lee'
 __email__ = 'jay0lee@gmail.com'
-__version__ = '1.31'
+__version__ = '1.32'
 __license__ = 'Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0)'
 __website__ = 'https://git.io/gyb'
 __db_schema_version__ = '6'
@@ -37,7 +37,9 @@ allLabels = dict()
 reserved_labels = ['inbox', 'spam', 'trash', 'unread', 'starred', 'important',
   'sent', 'draft', 'chat', 'chats', 'migrated', 'todo', 'todos', 'buzz',
   'bin', 'allmail', 'drafts', 'archived']
-
+system_labels = ['INBOX', 'SPAM', 'TRASH', 'UNREAD', 'STARRED', 'IMPORTANT',
+                 'SENT', 'DRAFT', 'CATEGORY_PERSONAL', 'CATEGORY_SOCIAL',
+                 'CATEGORY_PROMOTIONS', 'CATEGORY_UPDATES', 'CATEGORY_FORUMS']
 import argparse
 import importlib
 import sys
@@ -74,6 +76,7 @@ import googleapiclient.discovery
 import googleapiclient.errors
 
 import fmbox
+import labellang
 
 def getGYBVersion(divider="\n"):
   return ('Got Your Back %s~DIV~%s~DIV~%s - %s~DIV~Python %s.%s.%s %s-bit \
@@ -120,7 +123,7 @@ def SetupOptionParser(argv):
     dest='email',
     help='Full email address of user or group to act against')
   action_choices = ['backup','restore', 'restore-group', 'restore-mbox',
-    'count', 'purge', 'purge-labels', 'estimate', 'quota', 'reindex', 'revoke',
+    'count', 'purge', 'purge-labels', 'print-labels', 'estimate', 'quota', 'reindex', 'revoke',
     'split-mbox', 'create-project', 'delete-projects', 'check-service-account']
   parser.add_argument('--action',
     choices=action_choices,
@@ -703,7 +706,7 @@ def _run_oauth_flow(client_id, client_secret, scopes, access_type, login_hint=No
       'token_uri': 'https://oauth2.googleapis.com/token',
       }
     }
-  flow = ShortURLFlow.from_client_config(client_config, scopes)
+  flow = ShortURLFlow.from_client_config(client_config, scopes, autogenerate_code_verifier=True)
   kwargs = {'access_type': access_type}
   if login_hint:
     kwargs['login_hint'] = login_hint
@@ -1068,7 +1071,7 @@ and grant Client name:
 
 Access to scopes:
 
-%s\n''' % (user_domain, credentials.client_id, ',\n'.join(all_scopes))
+%s\n''' % (user_domain, client_id, ',\n'.join(all_scopes))
   print('')
   print(scopes_failed)  
   sys.exit(3)
@@ -1266,6 +1269,11 @@ def labelsToLabelIds(labels):
         allLabels[a_label['name']] = a_label['id']
   labelIds = list()
   for label in labels:
+    # convert language system labels to standard
+    label = labellang.mappings.get(label.upper(), label)
+    if label.upper() in system_labels:
+      labelIds.append(label.upper())
+      continue
     base_label = label.split('/')[0]
     if base_label.lower() in reserved_labels and base_label not in allLabels.keys():
       label = '_%s' % (label)
@@ -1501,7 +1509,7 @@ def main(argv):
   
   # If we're not doing a estimate or if the db file actually exists we open it
   # (creates db if it doesn't exist)
-  if options.action not in ['count', 'purge', 'purge-labels',
+  if options.action not in ['count', 'purge', 'purge-labels', 'print-labels',
     'quota', 'revoke']:
     if options.action not in ['estimate'] or os.path.isfile(sqldbfile):
       print("\nUsing backup folder %s" % options.local_folder)
@@ -1840,7 +1848,7 @@ def main(argv):
                 labels_str = mybytes.decode(encoding)
               except UnicodeDecodeError:
                 pass
-            labels = labels_str.strip().split(',')
+            labels.extend([p.strip(string.whitespace+'\"') for p in re.split("(,|\\\".*?\\\"|'.*?')", labels_str) if p.strip(',')])
           cased_labels = []
           for label in labels:
             if label == '' or label == None:
@@ -2045,6 +2053,20 @@ def main(argv):
         rewrite_line('Deleting label %s' % printable_name)
       callGAPI(service=gmail.users().labels(), function='delete',
         userId='me', id=label_result['id'], soft_errors=True)
+    print('\n')
+
+  # PRINT-LABELS #
+  elif options.action == 'print-labels':
+    safe_chars = "-_.() %s%s" % (string.ascii_letters, string.digits)
+    labels = callGAPI(service=gmail.users().labels(), function='list',
+                               userId='me', fields='labels(id,name,type)')
+    user_labels = []
+    for label in labels.get('labels'):
+      try:
+        print('%s (%s)' % (label['name'], label['id']))
+      except UnicodeEncodeError:
+        printable_name = ''.join(c for c in label['name'] if c in safe_chars)
+        print('%s: (%s)' % (printable_name, label['id']))
     print('\n')
 
   # QUOTA #
