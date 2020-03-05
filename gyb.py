@@ -24,7 +24,7 @@ global __name__, __author__, __email__, __version__, __license__
 __program_name__ = 'Got Your Back: Gmail Backup'
 __author__ = 'Jay Lee'
 __email__ = 'jay0lee@gmail.com'
-__version__ = '1.35'
+__version__ = '1.36'
 __license__ = 'Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0)'
 __website__ = 'https://git.io/gyb'
 __db_schema_version__ = '6'
@@ -124,7 +124,7 @@ def SetupOptionParser(argv):
     help='Full email address of user or group to act against')
   action_choices = ['backup','restore', 'restore-group', 'restore-mbox',
     'count', 'purge', 'purge-labels', 'print-labels', 'estimate', 'quota', 'reindex', 'revoke',
-    'split-mbox', 'create-project', 'delete-projects', 'check-service-account']
+    'split-mbox', 'create-project', 'delete-projects', 'check-service-account', 'create-label']
   parser.add_argument('--action',
     choices=action_choices,
     dest='action',
@@ -620,7 +620,7 @@ def callGAPIpages(service, function, items='items',
   all_pages = list()
   total_items = 0
   while True:
-    this_page = callGAPI(service=service, function=function,
+    this_page = callGAPI(service, function,
       pageToken=pageToken, **kwargs)
     if not this_page:
       this_page = {items: []}
@@ -1229,7 +1229,7 @@ def humansize(myobject):
 def doesTokenMatchEmail():
   auth_as = options.use_admin if options.use_admin else options.email
   oa2 = buildGAPIObject('oauth2')
-  user_info = callGAPI(service=oa2.userinfo(), function='get',
+  user_info = callGAPI(oa2.userinfo(), 'get',
     fields='email')
   if user_info['email'].lower() == auth_as.lower():
     return True
@@ -1247,19 +1247,18 @@ def rewrite_line(mystring):
     print()
   print(mystring, end='\r')
 
-def initializeDB(sqlcur, sqlconn, email):
-  sqlcur.executescript('''
-   CREATE TABLE messages(message_num INTEGER PRIMARY KEY, 
-                         message_filename TEXT, 
-                         message_internaldate TIMESTAMP);
-   CREATE TABLE labels (message_num INTEGER, label TEXT);
-   CREATE TABLE uids (message_num INTEGER, uid TEXT PRIMARY KEY);
-   CREATE TABLE settings (name TEXT PRIMARY KEY, value TEXT);
-   CREATE UNIQUE INDEX labelidx ON labels (message_num, label);
-  ''')
-  sqlcur.executemany('INSERT INTO settings (name, value) VALUES (?, ?)', 
-         (('email_address', email),
-          ('db_version', __db_schema_version__)))
+def initializeDB(sqlconn, email):
+  sqlconn.execute('''CREATE TABLE settings (name TEXT PRIMARY KEY, value TEXT);''')
+  sqlconn.execute('''INSERT INTO settings (name, value) VALUES (?, ?);''',
+       ('email_address', email))
+  sqlconn.execute('''INSERT INTO settings (name, value) VALUES (?, ?);''',
+       ('db_version', __db_schema_version__))
+  sqlconn.execute('''CREATE TABLE messages(message_num INTEGER PRIMARY KEY,
+                         message_filename TEXT,
+                         message_internaldate TIMESTAMP);''')
+  sqlconn.execute('''CREATE TABLE labels (message_num INTEGER, label TEXT);''')
+  sqlconn.execute('''CREATE TABLE uids (message_num INTEGER, uid TEXT PRIMARY KEY);''')
+  sqlconn.execute('''CREATE UNIQUE INDEX labelidx ON labels (message_num, label);''')
   sqlconn.commit()
 
 def labelIdsToLabels(labelIds):
@@ -1268,7 +1267,7 @@ def labelIdsToLabels(labelIds):
   for labelId in labelIds:
     if labelId not in allLabelIds:
       # refresh allLabelIds from Google
-      label_results = callGAPI(service=gmail.users().labels(), function='list',
+      label_results = callGAPI(gmail.users().labels(), 'list',
         userId='me', fields='labels(name,id,type)')
       allLabelIds = dict()
       for a_label in label_results['labels']:
@@ -1282,10 +1281,28 @@ def labelIdsToLabels(labelIds):
       pass
   return labels
 
+def createLabel(label_name):
+  global allLabels
+  if label_name in allLabels:
+    sys.stderr.write(f'WARNING: refusing to recreate existing label {label_name}\n')
+    return
+  rewrite_line(f'Creating label {label_name}')
+  body = {'labelListVisibility': 'labelShow',
+          'messageListVisibility': 'show',
+          'name': label_name}
+  label_results = None
+  try:
+    label_results = callGAPI(gmail.users().labels(), 'create',
+                             body=body, userId='me', fields='id',
+                             throw_reasons=['aborted'])
+    allLabels[label_name] = label_results['id']
+  except googleapiclient.errors.HttpError as e:
+    sys.stderr.write(f'WARNING: failed to create (existing?) label {label_name}\n')
+
 def labelsToLabelIds(labels):
   global allLabels
   if len(allLabels) < 1: # first fetch of all labels from Google
-    label_results = callGAPI(service=gmail.users().labels(), function='list',
+    label_results = callGAPI(gmail.users().labels(), 'list',
       userId='me', fields='labels(name,id,type)')
     allLabels = dict()
     for a_label in label_results['labels']:
@@ -1304,12 +1321,7 @@ def labelsToLabelIds(labels):
     if base_label.lower() in reserved_labels and base_label not in allLabels.keys():
       label = '_%s' % (label)
     if label not in allLabels.keys():
-      # create new label (or get it's id if it exists)
-      label_results = callGAPI(service=gmail.users().labels(), function='create',
-        body={'labelListVisibility': 'labelShow',
-          'messageListVisibility': 'show', 'name': label},
-        userId='me', fields='id')
-      allLabels[label] = label_results['id']
+      createLabel(label)
     try:
       labelIds.append(allLabels[label])
     except KeyError:
@@ -1319,9 +1331,7 @@ def labelsToLabelIds(labels):
       parent_label = label[:label.rfind('/')]
       while True:
         if not parent_label in allLabels:
-          label_result = callGAPI(service=gmail.users().labels(),
-            function='create', userId='me', body={'name': parent_label})
-          allLabels[parent_label] = label_result['id']
+          createLabel(parent_label)
         if parent_label.find('/') == -1:
           break
         parent_label = parent_label[:parent_label.rfind('/')]
@@ -1536,17 +1546,16 @@ def main(argv):
   # If we're not doing a estimate or if the db file actually exists we open it
   # (creates db if it doesn't exist)
   if options.action not in ['count', 'purge', 'purge-labels', 'print-labels',
-    'quota', 'revoke']:
+    'quota', 'revoke', 'create-label']:
     if options.action not in ['estimate'] or os.path.isfile(sqldbfile):
       print("\nUsing backup folder %s" % options.local_folder)
       global sqlconn
       global sqlcur
       sqlconn = sqlite3.connect(sqldbfile,
         detect_types=sqlite3.PARSE_DECLTYPES)
-      sqlconn.text_factory = str
       sqlcur = sqlconn.cursor()
       if newDB:
-        initializeDB(sqlcur, sqlconn, options.email)
+        initializeDB(sqlconn, options.email)
       db_settings = get_db_settings(sqlcur)
       check_db_settings(db_settings, options.action, options.email)
       if options.action not in ['restore', 'restore-group', 'restore-mbox']:
@@ -1564,8 +1573,8 @@ def main(argv):
     if options.batch_size == 0:
       options.batch_size = 100
     page_message = 'Got %%total_items%% Message IDs'
-    messages_to_process = callGAPIpages(service=gmail.users().messages(),
-      function='list', items='messages', page_message=page_message, maxResults=500,
+    messages_to_process = callGAPIpages(gmail.users().messages(),
+      'list', items='messages', page_message=page_message, maxResults=500,
       userId='me', includeSpamTrash=options.spamtrash, q=options.gmail_search,
       fields='nextPageToken,messages/id')
     backup_path = options.local_folder
@@ -1996,7 +2005,7 @@ def main(argv):
         os.path.join(options.local_folder, message_filename),
         mimetype='message/rfc822', resumable=True)
       try:
-        callGAPI(service=gmig.archive(), function='insert',
+        callGAPI(gmig.archive(), 'insert',
           groupId=options.email, media_body=media, soft_errors=True)
       except googleapiclient.errors.MediaUploadSizeError as e:
         print('\n ERROR: Message is to large for groups (%smb limit). \
@@ -2014,8 +2023,8 @@ def main(argv):
   elif options.action == 'count':
     if options.batch_size == 0:
       options.batch_size = 100
-    messages_to_process = callGAPIpages(service=gmail.users().messages(),
-      function='list', items='messages', maxResults=500,
+    messages_to_process = callGAPIpages(gmail.users().messages(),
+      'list', items='messages', maxResults=500,
       userId='me', includeSpamTrash=options.spamtrash, q=options.gmail_search,
       fields='nextPageToken,messages/id')
     estimate_count = len(messages_to_process)
@@ -2026,8 +2035,8 @@ def main(argv):
     if options.batch_size == 0:
       options.batch_size = 1000
     page_message = 'Got %%total_items%% Message IDs'
-    messages_to_process = callGAPIpages(service=gmail.users().messages(),
-      function='list', items='messages', page_message=page_message,
+    messages_to_process = callGAPIpages(gmail.users().messages(),
+      'list', items='messages', page_message=page_message,
       userId='me', includeSpamTrash=True, q=options.gmail_search,
       maxResults=500, fields='nextPageToken,messages/id')
     purge_count = len(messages_to_process)
@@ -2054,7 +2063,7 @@ def main(argv):
     if pattern == '-is:chat':
       pattern = '.*'
     pattern = re.compile(pattern)
-    existing_labels = callGAPI(service=gmail.users().labels(), function='list',
+    existing_labels = callGAPI(gmail.users().labels(), 'list',
       userId='me', fields='labels(id,name,type)')
     for label_result in existing_labels['labels']:
       if label_result['type'] == 'system' or not \
@@ -2065,22 +2074,26 @@ def main(argv):
       except UnicodeEncodeError:
         printable_name = ''.join(c for c in label_result['name'] if c in safe_chars)
         rewrite_line('Deleting label %s' % printable_name)
-      callGAPI(service=gmail.users().labels(), function='delete',
+      callGAPI(gmail.users().labels(), 'delete',
         userId='me', id=label_result['id'], soft_errors=True)
     print('\n')
 
   # PRINT-LABELS #
   elif options.action == 'print-labels':
     safe_chars = "-_.() %s%s" % (string.ascii_letters, string.digits)
-    labels = callGAPI(service=gmail.users().labels(), function='list',
+    labels = callGAPI(gmail.users().labels(), 'list',
                                userId='me', fields='labels(id,name,type)')
-    user_labels = []
-    for label in labels.get('labels'):
-      try:
-        print('%s (%s)' % (label['name'], label['id']))
-      except UnicodeEncodeError:
-        printable_name = ''.join(c for c in label['name'] if c in safe_chars)
-        print('%s: (%s)' % (printable_name, label['id']))
+    all_system_labels = [label for label in labels.get('labels') if label['type'] == 'system']
+    all_user_labels = [label for label in labels.get('labels') if label['type'] != 'system']
+    all_system_labels = sorted(all_system_labels, key = lambda i: i['name'])
+    all_user_labels = sorted(all_user_labels, key = lambda i: i['name'])
+    for label_list in [all_system_labels, all_user_labels]:
+      for label in label_list:
+        try:
+          print('%s (%s)' % (label['name'], label['id']))
+        except UnicodeEncodeError:
+          printable_name = ''.join(c for c in label['name'] if c in safe_chars)
+          print('%s: (%s)' % (printable_name, label['id']))
     print('\n')
 
   # QUOTA #
@@ -2089,7 +2102,7 @@ def main(argv):
       drive = buildGAPIObject('drive')
     else:
       drive = buildGAPIServiceObject('drive')
-    quota_results = callGAPI(service=drive.about(), function='get',
+    quota_results = callGAPI(drive.about(), 'get',
       fields='quotaBytesTotal,quotaBytesUsedInTrash,quotaBytesUsedAggregate,qu\
 otaBytesByService,quotaType')
     for key in quota_results:
@@ -2140,8 +2153,8 @@ otaBytesByService,quotaType')
     if options.batch_size == 0:
       options.batch_size = 100
     page_message = 'Got %%total_items%% Message IDs'
-    messages_to_process = callGAPIpages(service=gmail.users().messages(),
-      function='list', items='messages', page_message=page_message,
+    messages_to_process = callGAPIpages(gmail.users().messages(),
+      'list', items='messages', page_message=page_message,
       userId='me', includeSpamTrash=options.spamtrash, q=options.gmail_search,
       maxResults=500, fields='nextPageToken,messages/id')
     estimate_path = options.local_folder
@@ -2159,6 +2172,12 @@ otaBytesByService,quotaType')
     print("GYB already has a backup of %s messages" %
       (len(messages_to_process) - len(messages_to_estimate)))
     getSizeOfMessages(messages_to_estimate, gmail)
+
+  # CREATE-LABEL
+  elif options.action == 'create-label':
+    labels = options.label_restored
+    for label in labels:
+      createLabel(label)
 
 if __name__ == '__main__':
   if sys.version_info[0] < 3 or sys.version_info[1] < 6:
