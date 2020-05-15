@@ -24,7 +24,7 @@ global __name__, __author__, __email__, __version__, __license__
 __program_name__ = 'Got Your Back: Gmail Backup'
 __author__ = 'Jay Lee'
 __email__ = 'jay0lee@gmail.com'
-__version__ = '1.36'
+__version__ = '1.37'
 __license__ = 'Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0)'
 __website__ = 'https://git.io/gyb'
 __db_schema_version__ = '6'
@@ -56,6 +56,7 @@ import sqlite3
 import ssl
 import email
 import hashlib
+import pkg_resources
 import re
 import string
 from itertools import islice, chain
@@ -79,10 +80,11 @@ import fmbox
 import labellang
 
 def getGYBVersion(divider="\n"):
+  api_client_ver = pkg_resources.get_distribution("google-api-python-client").version
   return ('Got Your Back %s~DIV~%s~DIV~%s - %s~DIV~Python %s.%s.%s %s-bit \
 %s~DIV~google-api-client %s~DIV~%s %s' % (__version__, __website__, __author__, __email__,
 sys.version_info[0], sys.version_info[1], sys.version_info[2],
-struct.calcsize('P')*8, sys.version_info[3], googleapiclient.__version__, platform.platform(),
+struct.calcsize('P')*8, sys.version_info[3], api_client_ver, platform.platform(),
 platform.machine())).replace('~DIV~', divider)
 
 USER_AGENT = getGYBVersion(' | ')
@@ -561,7 +563,7 @@ def buildGAPIServiceObject(api, soft_errors=False):
       e = e.args[0]
     systemErrorExit(5, e)
 
-def callGAPI(service, function, soft_errors=False, throw_reasons=[], **kwargs):
+def callGAPI(service, function, soft_errors=False, throw_reasons=[], retry_reasons=[], **kwargs):
   retries = 10
   parameters = kwargs.copy()
   parameters.update(extra_args)
@@ -587,12 +589,13 @@ def callGAPI(service, function, soft_errors=False, throw_reasons=[], **kwargs):
         message = error['error']['errors'][0]['message']
       except (KeyError, json.decoder.JSONDecodeError):
         http_status = int(e.resp['status'])
-        reason = e.content
+        reason = http_status
         message = e.content
       if reason in throw_reasons:
         raise
       if n != retries and (http_status >= 500 or
-       reason in ['rateLimitExceeded', 'userRateLimitExceeded', 'backendError']):
+       reason in ['rateLimitExceeded', 'userRateLimitExceeded', 'backendError'] or
+       reason in retry_reasons):
         wait_on_fail = (2 ** n) if (2 ** n) < 60 else 60
         randomness = float(random.randint(1,1000)) / 1000
         wait_on_fail += randomness
@@ -1003,11 +1006,21 @@ and accept the Terms of Service (ToS). As soon as you've accepted the ToS popup,
           cache_discovery=False,
           discoveryServiceUrl=googleapiclient.discovery.V2_DISCOVERY_URI)
   print('Creating Service Account')
+  sa_body = {
+             'accountId': project_id,
+             'serviceAccount': {
+               'displayName': 'GYB Project Service Account'
+             }
+            }
   service_account = callGAPI(iam.projects().serviceAccounts(), 'create',
                              name='projects/%s' % project_id,
-                             body={'accountId': project_id, 'serviceAccount': {'displayName': 'GYB Project Service Account'}})
+                             body=sa_body)
+  key_body = {
+              'privateKeyType': 'TYPE_GOOGLE_CREDENTIALS_FILE',
+              'keyAlgorithm': 'KEY_ALG_RSA_2048'
+             }
   key = callGAPI(iam.projects().serviceAccounts().keys(), 'create',
-                 name=service_account['name'], body={'privateKeyType': 'TYPE_GOOGLE_CREDENTIALS_FILE', 'keyAlgorithm': 'KEY_ALG_RSA_2048'})
+                 name=service_account['name'], body=key_body, retry_reasons=[404])
   oauth2service_data = base64.b64decode(key['privateKeyData'])
   writeFile(service_account_file, oauth2service_data, continueOnError=False)
   _createClientSecretsOauth2service(project_id)
