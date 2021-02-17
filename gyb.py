@@ -24,7 +24,7 @@ global __name__, __author__, __email__, __version__, __license__
 __program_name__ = 'Got Your Back: Gmail Backup'
 __author__ = 'Jay Lee'
 __email__ = 'jay0lee@gmail.com'
-__version__ = '1.41'
+__version__ = '1.42'
 __license__ = 'Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0)'
 __website__ = 'https://git.io/gyb'
 __db_schema_version__ = '6'
@@ -927,7 +927,7 @@ def setGAMProjectConsentScreen(httpObj, projectId, login_hint):
     print('Setting project consent screen...')
     iap = buildGAPIObject('iap', httpObj)
     body = {'applicationTitle': 'GYB', 'supportEmail': login_hint}
-    throw_reasons = ['badRequest']
+    throw_reasons = ['badRequest', '400', 400]
     try:
         callGAPI(iap.projects().brands(),
                   'create',
@@ -1975,7 +1975,7 @@ def main(argv):
                                                            resumable=True)
             try:
               response = callGAPI(gmail.users().messages(), 'import_',
-                userId='me', throw_reasons=['invalidArgument',], media_body=media_body, body=body,
+                userId='me', throw_reasons=['invalidArgument',], media_body=media, body=body,
                 deleted=deleted, soft_errors=True, neverMarkSpam=True)
               if response == None:
                 continue
