@@ -1,6 +1,11 @@
 {
-  "python.pythonPath": "/usr/bin/python3",
-  "python.linting.pylintEnabled": true,
+  "[python]": {
+    "editor.formatOnSave": false,
+    "files.trimTrailingWhitespace": false
+  },
   "python.linting.enabled": false,
-  "python.analysis.typeCheckingMode": "off"
+  "python.linting.flake8Enabled": true,
+  "python.linting.pylintEnabled": true,
+  "python.analysis.typeCheckingMode": "off",
+  "editor.trimAutoWhitespace": false
 }
