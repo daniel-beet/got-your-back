@@ -218,6 +218,10 @@ where last restore left off.')
     dest='debug',
     help='Turn on verbose debugging and connection information \
 (troubleshooting)')
+  parser.add_argument('--noninteractive',
+    action='store_true',
+    dest='noninteractive',
+    help='Turn on non-interactive mode of log messages')
   parser.add_argument('--memory-limit',
     dest='memory_limit',
     type=int,
@@ -1295,6 +1299,10 @@ when authorizing the token in the browser." % auth_as)
   return False
 
 def rewrite_line(mystring):
+  if options.noninteractive:
+    if mystring:
+      print(mystring)
+    return
   if not options.debug:
     print(' ' * 80, end='\r')
   else:
