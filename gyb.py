@@ -24,7 +24,7 @@ global __name__, __author__, __email__, __version__, __license__
 __program_name__ = 'Got Your Back: Gmail Backup'
 __author__ = 'Jay Lee'
 __email__ = 'jay0lee@gmail.com'
-__version__ = '1.50'
+__version__ = '1.51'
 __license__ = 'Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0)'
 __website__ = 'https://git.io/gyb'
 __db_schema_version__ = '6'
@@ -2031,10 +2031,11 @@ def main(argv):
                 vault_label_map[fileid] = labels
               elem.clear()  # keep memory usage down on very large files
     # Look for and restore mbox files
+    mbox_extensions = ['mbx', 'mbox', 'eml']
     for path, subdirs, files in os.walk(options.local_folder):
       for filename in files:
-        if filename[-4:].lower() != '.mbx' and \
-          filename[-5:].lower() != '.mbox':
+        file_extension = filename.split('.')[-1]
+        if file_extension not in mbox_extensions:
           continue
         file_path = os.path.join(path, filename)
         print("\nRestoring from %s file %s..." % (humansize(file_path), file_path))
