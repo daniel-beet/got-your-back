@@ -24,7 +24,7 @@ global __name__, __author__, __email__, __version__, __license__
 __program_name__ = 'Got Your Back: Gmail Backup'
 __author__ = 'Jay Lee'
 __email__ = 'jay0lee@gmail.com'
-__version__ = '1.51'
+__version__ = '1.52'
 __license__ = 'Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0)'
 __website__ = 'https://git.io/gyb'
 __db_schema_version__ = '6'
@@ -36,7 +36,7 @@ allLabelIds = dict()
 allLabels = dict()
 reserved_labels = ['inbox', 'spam', 'trash', 'unread', 'starred', 'important',
   'sent', 'draft', 'chat', 'chats', 'migrated', 'todo', 'todos', 'buzz',
-  'bin', 'allmail', 'drafts', 'archived']
+  'bin', 'allmail', 'drafts', 'archive', 'archived']
 system_labels = ['INBOX', 'SPAM', 'TRASH', 'UNREAD', 'STARRED', 'IMPORTANT',
                  'SENT', 'DRAFT', 'CATEGORY_PERSONAL', 'CATEGORY_SOCIAL',
                  'CATEGORY_PROMOTIONS', 'CATEGORY_UPDATES', 'CATEGORY_FORUMS']
@@ -156,7 +156,7 @@ uploaded messages with a gyb-restored label.',
                       dest='label_prefix',
                       help='Optional: On restore, all labels will additionally receive \
   this prefix label. For example, "--label-prefix gyb-archive" will become main label of all \
-  uploaded labels with a gyb-prefix label. \
+  uploaded labels with a gyb-archive label. \
   ATTENTION - This is not compatible with --label-strip \
   ATTENTION - this will also create one INBOX and SENT specific label',
                       default=[])

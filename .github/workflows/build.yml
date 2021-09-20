@@ -11,12 +11,12 @@ defaults:
     shell: bash
 
 env:
-  BUILD_PYTHON_VERSION: "3.9.4"
-  MIN_PYTHON_VERSION: "3.9.4"
-  BUILD_OPENSSL_VERSION: "1.1.1k"
-  MIN_OPENSSL_VERSION: "1.1.1i"
+  BUILD_PYTHON_VERSION: "3.9.7"
+  MIN_PYTHON_VERSION: "3.9.7"
+  BUILD_OPENSSL_VERSION: "1.1.1l"
+  MIN_OPENSSL_VERSION: "1.1.1l"
   PATCHELF_VERSION: "0.12"
-  PYINSTALLER_VERSION: "000275e409640320cdd995a7f077abfdece86749"
+  PYINSTALLER_VERSION: "5a02f55c696f16b98f23a8b487f3daa8f644a8d2"
 
 jobs:
   build:
@@ -24,11 +24,6 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: ubuntu-16.04
-            jid: 1
-            goal: "build"
-            gybos: "linux"
-            platform: "x86_64"
           - os: ubuntu-18.04
             jid: 2
             goal: "build"
@@ -39,11 +34,6 @@ jobs:
             goal: "build"
             gybos: "linux"
             platform: "x86_64"
-          - os: macos-10.15
-            jid: 4
-            goal: "build"
-            gybos: "macos"
-            platform: "x86_64"
           - os: macos-11.0
             jid: 5 
             goal: "build"
@@ -53,16 +43,12 @@ jobs:
             jid: 6
             goal: "build"
             gybos: "windows"
-            python: 3.9.4
-            pyarch: "x64" 
             platform: "x86_64"
           - os: windows-2019
             jid: 7
             goal: "build"
             gybos: "windows"
             platform: "x86"
-            python: 3.9.4
-            pyarch: "x86"
           - os: ubuntu-20.04
             goal: "test"
             python: "3.6"
@@ -96,7 +82,7 @@ jobs:
           path: |
             ~/python
             ~/ssl
-          key: ${{ matrix.os }}-${{ matrix.jid }}-20210423
+          key: ${{ matrix.os }}-${{ matrix.jid }}-20210723
 
       - name: Set env variables
         env:
@@ -111,12 +97,32 @@ jobs:
           echo "PLATFORM=${PLATFORM}" >> $GITHUB_ENV
           uname -a
 
-      - name: Use pre-compiled Python for testing and Windows
+      - name: Use pre-compiled Python for testing
         if: matrix.python != ''
         uses: actions/setup-python@v2
         with:
           python-version: ${{ matrix.python }}
           architecture: ${{ matrix.pyarch }}
+
+      - name: Install Python on Windows
+        if: matrix.os == 'windows-2019'
+        run: |
+          if ( ${Env:PLATFORM} -eq "x86_64" )
+          {
+            Set-Variable -name py_arch -value "-amd64"
+          }
+          else
+          {
+            Set-Variable -name py_arch -value ""
+          }
+          Write-Output "py_arch: $py_arch"
+          Set-Variable -name python_file -value "python-${Env:BUILD_PYTHON_VERSION}${py_arch}.exe"
+          Write-Output "python_file: $python_file"
+          Set-Variable -name python_url -value "https://www.python.org/ftp/python/${Env:BUILD_PYTHON_VERSION}/${python_file}"
+          Write-Output "python_url: $python_url"
+          Invoke-WebRequest -Uri $python_url -OutFile $python_file
+          Start-Process -wait -FilePath $python_file -ArgumentList "/quiet","InstallAllUsers=0","TargetDir=c:\\python","AssociateFiles=1","PrependPath=1"
+        shell: pwsh
 
       - name: Set env variables for pre-compiled Python
         if: matrix.goal == 'test'
@@ -141,26 +147,26 @@ jobs:
              echo "pip=$pip" >> $GITHUB_ENV
              echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" >> $GITHUB_ENV
              echo -e "Python: $python\nPip: $pip\nLD_LIB...: $LD_LIBRARY_PATH"
+             $pip install --upgrade pip
              $pip install wheel
              export url="https://codeload.github.com/pyinstaller/pyinstaller/tar.gz/${PYINSTALLER_VERSION}"
              echo "Downloading ${url}"
              curl -o pyinstaller.tar.gz --compressed "${url}"
              tar xf pyinstaller.tar.gz
              cd "pyinstaller-${PYINSTALLER_VERSION}/"
-             if [ $GYBOS == "windows" ]; then
-               # remove pre-compiled bootloaders so we fail if bootloader compile fails
-               rm -rf PyInstaller/bootloader/*bit
-               cd bootloader
-               if [ "${PLATFORM}" == "x86" ]; then
-                 TARGETARCH="--target-arch=32bit"
-               else
-                 TARGETARCH=""
-               fi
-               $python ./waf all $TARGETARCH
-               cd ..
+             # remove pre-compiled bootloaders so we fail if bootloader compile fails
+             mv PyInstaller/bootloader/images /tmp
+             rm -rf PyInstaller/bootloader/*
+             mv /tmp/images PyInstaller/bootloader/
+             cd bootloader
+             if [ "${PLATFORM}" == "x86" ]; then
+               TARGETARCH="--target-arch=32bit"
+             else
+               TARGETARCH=""
              fi
-             $python setup.py install
-             #$pip install pyinstaller
+             $python ./waf all $TARGETARCH
+             cd ..
+             $pip install .
 
       - name: Install pip requirements
         if: matrix.os != 'self-hosted'
