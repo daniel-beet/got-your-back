@@ -580,6 +580,11 @@ def doGYBCheckForUpdates(forceCheck=False, debug=False):
   def _LatestVersionNotAvailable():
     if forceCheck:
       systemErrorExit(4, 'GYB Latest Version information not available')
+
+  no_last_update_check_file = os.path.join(getProgPath(), 'noupdatecheck.txt')
+  if os.path.isfile(no_last_update_check_file):
+    return
+
   last_update_check_file = os.path.join(getProgPath(), 'lastcheck.txt')
   current_version = __version__
   now_time = calendar.timegm(time.gmtime())
