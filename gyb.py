@@ -689,7 +689,7 @@ def buildGAPIServiceObject(api, soft_errors=False):
   if os.path.isfile(os.path.join(getProgPath(), 'extra-args.txt')):
     config = configparser.ConfigParser()
     config.optionxform = str
-    config.read(getGamPath()+'extra-args.txt')
+    config.read(os.path.join(getProgPath(), 'extra-args.txt'))
     extra_args.update(dict(config.items('extra-args')))
   httpc = _createHttpObj()
   request = google_auth_httplib2.Request(httpc)
