@@ -1915,7 +1915,7 @@ def getSizeOfMessages(messages, gmail):
   print('\n')
   return message_sizes
 
-def restore_msg_to_group(gmig, full_message, message_num, sqlconn):
+def restore_msg_to_group(gmig, full_message, message_num, sqlconn, max_message_size):
     fstr = BytesIO(full_message)
     media = googleapiclient.http.MediaIoBaseUpload(fstr,
                                                    mimetype='message/rfc822',
@@ -2483,7 +2483,7 @@ def main(argv):
         f = open(os.path.join(options.local_folder, message_filename), 'rb')
         full_message = f.read()
         f.close()
-        restore_msg_to_group(gmig, full_message, message_num, sqlconn)
+        restore_msg_to_group(gmig, full_message, message_num, sqlconn, max_message_size)
     else: # mbox format
         sqlcur.execute('ATTACH ? as resume', (resumedb,))
         sqlcur.executescript('''CREATE TABLE
@@ -2525,7 +2525,7 @@ def main(argv):
               mbox_pct = percentage(mbox._mbox_position, mbox._mbox_size)
               rewrite_line(" message %s - %s%%" % (current, mbox_pct))
               full_message = message.as_bytes()
-              restore_msg_to_group(gmig, full_message, request_id, sqlconn)
+              restore_msg_to_group(gmig, full_message, request_id, sqlconn, max_message_size)
     sqlconn.commit()
     sqlconn.execute('DETACH resume')
     sqlconn.commit()
