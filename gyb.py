@@ -47,7 +47,6 @@ import configparser
 import datetime
 import email
 import hashlib
-import importlib
 from io import BytesIO
 import json
 import os
@@ -57,18 +56,15 @@ import platform
 import random
 import re
 import shutil
-import socket
 import sqlite3
 import ssl
 import string
 import struct
 import sys
 import time
-import urllib
 import webbrowser
 import xml.etree.ElementTree as etree
 import zipfile
-from itertools import chain, islice
 from urllib.parse import urlencode
 import configparser
 import webbrowser
