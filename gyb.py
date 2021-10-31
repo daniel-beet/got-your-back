@@ -20,7 +20,7 @@ backup and restore their Gmail.
 For more information, see https://git.io/gyb/
 """
 
-global __name__, __author__, __email__, __version__, __license__
+global __author__, __email__, __version__, __license__
 __program_name__ = 'Got Your Back: Gmail Backup'
 __author__ = 'Jay Lee'
 __email__ = 'jay0lee@gmail.com'
