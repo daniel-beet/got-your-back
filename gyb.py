@@ -1163,7 +1163,7 @@ def writeFile(filename, data, mode='wb', continueOnError=False, displayError=Tru
   except IOError as e:
     if continueOnError:
       if displayError:
-        stderrErrorMsg(e)
+        sys.stderr.write(str(e))
       return False
     systemErrorExit(6, e)
 
