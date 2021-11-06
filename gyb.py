@@ -24,7 +24,7 @@ global __name__, __author__, __email__, __version__, __license__
 __program_name__ = 'Got Your Back: Gmail Backup'
 __author__ = 'Jay Lee'
 __email__ = 'jay0lee@gmail.com'
-__version__ = '1.52'
+__version__ = '1.53'
 __license__ = 'Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0)'
 __website__ = 'https://git.io/gyb'
 __db_schema_version__ = '6'
@@ -115,7 +115,7 @@ google_auth_httplib2.AuthorizedHttp.request = _request_with_user_agent(
 def SetupOptionParser(argv):
   tls_choices = []
   if getattr(ssl, 'TLSVersion', False):
-    tls_min_default = 'TLSv1_2'
+    tls_min_default = 'TLSv1_3'
     tls_vals = list(ssl.TLSVersion)[1:-1]
     tls_choices = []
     for val in tls_vals:
@@ -1234,6 +1234,7 @@ def getSvcAccountClientId():
     systemErrorExit(6, 'oauth2service.json is invalid.')
 
 def doCheckServiceAccount():
+  print(f'Checking service account DwD for {options.email}...')
   all_scopes = []
   for _, scopes in API_SCOPE_MAPPING.items():
     for scope in scopes:
@@ -1698,9 +1699,9 @@ def main(argv):
     print(ssl.OPENSSL_VERSION)
     anonhttpc = _createHttpObj()
     headers = {'User-Agent': getGYBVersion(' | ')}
-    anonhttpc.request('https://www.googleapis.com', headers=headers)
-    cipher_name, tls_ver, _ = anonhttpc.connections['https:www.googleapis.com'].sock.cipher()
-    print('www.googleapis.com connects using %s %s' % (tls_ver, cipher_name))
+    anonhttpc.request('https://gmail.googleapis.com', headers=headers)
+    cipher_name, tls_ver, _ = anonhttpc.connections['https:gmail.googleapis.com'].sock.cipher()
+    print('gmail.googleapis.com connects using %s %s' % (tls_ver, cipher_name))
     sys.exit(0)
   if options.shortversion:
     sys.stdout.write(__version__)
