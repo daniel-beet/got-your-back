@@ -206,7 +206,17 @@ where last restore left off.')
     dest='refresh',
     action='store_false',
     default=True,
-    help='Optional: On backup, skips refreshing labels for existing message and marking deleted messages')
+    help='Optional: On backup, skips refreshing labels for existing message')
+  parser.add_argument('--remove-deleted',
+    dest='remove_deleted',
+    action='store_true',
+    default=False,
+    help='Optional: On backup, mark and move deleted messages to deleted directory')
+  parser.add_argument('--purge-deleted',
+    dest='purge_deleted',
+    action='store_true',
+    default=False,
+    help='Optional: On backup, purge messages marked as deleted from database (messages remain in the deleted directory)')
   parser.add_argument('-z', '--zip',
     dest='zip',
     action='store_true',
@@ -2088,47 +2098,63 @@ def main(argv):
         (backed_up_messages, backup_count))
     print("")
 
-    if not options.refresh:
-      messages_to_refresh = []
-    else:
+    if options.remove_deleted:
       backed_up_message_ids = get_backed_up_message_ids(sqlcur, sqlconn, options.local_folder)
-      # get all messages, ignoreing the optional search so that we do not delete too much
-      all_messages = callGAPIpages(service=gmail.users().messages(),
-        function='list', items='messages', page_message=page_message, maxResults=500,
-        userId='me', includeSpamTrash=options.spamtrash, q='',
-        fields='nextPageToken,messages/id')
-      all_message_ids = set(message['id'] for message in all_messages)
+      # get all messages, ignoring the optional search so that we do not delete too much
+      if (options.gmail_search != ''):
+        all_messages = callGAPIpages(service=gmail.users().messages(),
+          function='list', items='messages', page_message=page_message, maxResults=500,
+          userId='me', includeSpamTrash=options.spamtrash, q='',
+          fields='nextPageToken,messages/id')
+        all_message_ids = set(message['id'] for message in all_messages)
+      else:
+        all_message_ids = set(message['id'] for message in messages_to_process)
       # find local messages that are not in the server set
       deleted_uids = list(set(backed_up_message_ids.keys()) - all_message_ids)
       mark_messages_deleted(deleted_uids, backed_up_message_ids, sqlcur, sqlconn, options.local_folder)
       mark_removed_messages_deleted(sqlcur, sqlconn)
       archive_deleted_messages(sqlcur, sqlconn, options.local_folder)
 
-    refreshed_messages = 0
-    refresh_count = len(messages_to_refresh)
-    print("GYB needs to refresh %s messages" % refresh_count)
-    sqlcur.executescript("""
-       CREATE TEMP TABLE current_labels (label TEXT);
-    """)
-    gbatch = gmail.new_batch_http_request()
-    for a_message in messages_to_refresh:
-      gbatch.add(gmail.users().messages().get(userId='me',
-        id=a_message, format='minimal',
-        fields='id,labelIds'),
-        callback=refresh_message)
-      refreshed_messages += 1
-      if len(gbatch._order) == options.batch_size:
+    if options.purge_deleted:
+      sqlcur.execute('SELECT COUNT(*) FROM messages WHERE is_deleted = 1')
+      sqlresults = sqlcur.fetchone()
+      deleted_count = sqlresults[0]
+      if deleted_count > 0:
+        print("GYB needs to purge %s deleted messages" % deleted_count)
+
+        sqlcur.execute('DELETE FROM uids WHERE message_num in (SELECT message_num FROM messages WHERE is_deleted = 1)')
+        sqlcur.execute('DELETE FROM labels WHERE message_num in (SELECT message_num FROM messages WHERE is_deleted = 1)')
+        sqlcur.execute('DELETE FROM messages WHERE is_deleted = 1')
+        sqlconn.commit()
+
+    if options.refresh:
+      refreshed_messages = 0
+      refresh_count = len(messages_to_refresh)
+      print("GYB needs to refresh %s messages" % refresh_count)
+      sqlcur.executescript("""
+        CREATE TEMP TABLE current_labels (label TEXT);
+      """)
+      gbatch = gmail.new_batch_http_request()
+      for a_message in messages_to_refresh:
+        gbatch.add(gmail.users().messages().get(userId='me',
+          id=a_message, format='minimal',
+          fields='id,labelIds'),
+          callback=refresh_message)
+        refreshed_messages += 1
+        if len(gbatch._order) == options.batch_size:
+          callGAPI(gbatch, None, soft_errors=True)
+          gbatch = gmail.new_batch_http_request()
+          sqlconn.commit()
+          rewrite_line("refreshed %s of %s messages" %
+            (refreshed_messages, refresh_count))
+      if len(gbatch._order) > 0:
         callGAPI(gbatch, None, soft_errors=True)
-        gbatch = gmail.new_batch_http_request()
         sqlconn.commit()
         rewrite_line("refreshed %s of %s messages" %
           (refreshed_messages, refresh_count))
-    if len(gbatch._order) > 0:
-      callGAPI(gbatch, None, soft_errors=True)
-      sqlconn.commit()
-      rewrite_line("refreshed %s of %s messages" %
-        (refreshed_messages, refresh_count))
-    print("\n")
+      print("\n")
+    else:
+      messages_to_refresh = []
 
     if options.zip:
       create_compressed_archives(options.local_folder)
