@@ -24,7 +24,7 @@ global __name__, __author__, __email__, __version__, __license__
 __program_name__ = 'Got Your Back: Gmail Backup'
 __author__ = 'Jay Lee'
 __email__ = 'jay0lee@gmail.com'
-__version__ = '1.53'
+__version__ = '1.54'
 __license__ = 'Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0)'
 __website__ = 'https://git.io/gyb'
 __db_schema_version__ = '6'
@@ -529,7 +529,10 @@ def writeCredentials(creds):
 def _decodeIdToken(credentials=None):
   credentials = credentials if credentials is not None else getValidOauth2TxtCredentials()
   httpc = google_auth_httplib2.Request(_createHttpObj())
-  return google.oauth2.id_token.verify_oauth2_token(credentials.id_token, httpc)
+  return google.oauth2.id_token.verify_oauth2_token(
+    credentials.id_token,
+    httpc,
+    clock_skew_in_seconds=10)
 
 def _getValueFromOAuth(field, credentials=None):
   id_token = _decodeIdToken(credentials)
@@ -1712,6 +1715,10 @@ def main(argv):
   if not options.email:
     print('ERROR: --email is required.')
     sys.exit(1)
+  if options.action in ['restore', 'restore-group', 'restore-mbox'] and \
+     options.gmail_search != '-is:chat':
+    print('ERROR: --search does not work with restores.')
+    sys.exit(1)
   if options.local_folder == 'XXXuse-email-addressXXX':
     options.local_folder = "GYB-GMail-Backup-%s" % options.email
   if options.action == 'create-project':
@@ -2421,8 +2428,8 @@ otaBytesByService,quotaType')
       createLabel(label)
 
 if __name__ == '__main__':
-  if sys.version_info[0] < 3 or sys.version_info[1] < 6:
-    print('ERROR: GYB requires Python 3.6 or greater.')
+  if sys.version_info[0] < 3 or sys.version_info[1] < 7:
+    print('ERROR: GYB requires Python 3.7 or greater.')
     sys.exit(3)
   elif sys.version_info[1] >= 7:
     sys.stdout.reconfigure(encoding='utf-8', errors='backslashreplace')
