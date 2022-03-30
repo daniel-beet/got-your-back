@@ -74,7 +74,7 @@ jobs:
           path: |
             ./ssl
             ./python
-          key: ${{ matrix.jid }}-20220316-01
+          key: ${{ matrix.jid }}-20220329
 
       - name: Use pre-compiled Python
         if: matrix.python != ''
@@ -313,8 +313,8 @@ jobs:
           fi
           echo "PyInstaller build arguments: ${PYINSTALLER_BUILD_ARGS}"
           "${PYTHON}" ./waf all $PYINSTALLER_BUILD_ARGS
-          cd ..
-          "${PYTHON}" -m pip install .
+          cd ../..
+          "${PYTHON}" -m pip install pyinstaller
 
       - name: Install pip requirements
         run: |
@@ -325,7 +325,7 @@ jobs:
       - name: Build GYB with PyInstaller
         if: matrix.goal != 'test'
         run: |
-             "${PYTHON}" -OO -m PyInstaller --clean --noupx --strip --onefile --distpath=gyb gyb.spec
+             "${PYTHON}" -m PyInstaller --clean --distpath=gyb gyb.spec
              if [ -x "$(command -v realpath)" ]; then
                realpath=realpath
              else
