@@ -69,7 +69,7 @@ jobs:
           path: |
             ./ssl
             ./python
-          key: ${{ matrix.jid }}-20220616
+          key: ${{ matrix.jid }}-20220926
 
       - name: Use pre-compiled Python
         if: matrix.python != ''
@@ -125,10 +125,12 @@ jobs:
             PYEXTERNALS_PATH="amd64"
             PYBUILDRELEASE_ARCH="x64"
             OPENSSL_CONFIG_TARGET="VC-WIN64A"
+            CHOC_OPS=""
           elif [[ "${arch}" == "Win32" ]]; then
             PYEXTERNALS_PATH="win32"
             PYBUILDRELEASE_ARCH="Win32"
             OPENSSL_CONFIG_TARGET="VC-WIN32"
+            CHOC_OPS="--forcex86"
           fi
           echo "We'll run make with: ${MAKEOPT}"
           echo "JID=${jid}" >> $GITHUB_ENV
@@ -139,6 +141,7 @@ jobs:
           echo "PYEXTERNALS_PATH=${PYEXTERNALS_PATH}" >> $GITHUB_ENV
           echo "PYBUILDRELEASE_ARCH=${PYBUILDRELEASE_ARCH}" >> $GITHUB_ENV
           echo "OPENSSL_CONFIG_TARGET=${OPENSSL_CONFIG_TARGET}" >> $GITHUB_ENV
+          echo "CHOC_OPS=${CHOC_OPS}" >> $GITHUB_ENV
           echo "LD_LIBRARY_PATH=${OPENSSL_INSTALL_PATH}/lib:${PYTHON_INSTALL_PATH}/lib" >> $GITHUB_ENV
 
       - name: Get latest stable OpenSSL source
@@ -156,6 +159,11 @@ jobs:
         if: matrix.os == 'windows-2022' && steps.cache-python-ssl.outputs.cache-hit != 'true'
         with:
           arch: ${{ matrix.arch }}
+
+      - name: Windows Choco Packages Install
+        if: runner.os == 'Windows'
+        run: |
+          choco install sqlite $CHOC_OPS
 
       - name: Windows NASM Install
         uses: ilammy/setup-nasm@v1
@@ -290,13 +298,21 @@ jobs:
           "${PYTHON}" -m pip install --upgrade pip
           "${PYTHON}" -m pip install --upgrade wheel
           "${PYTHON}" -m pip install --upgrade setuptools
-    
+
+      - name: Install pip requirements
+        run: |
+             set +e
+             "${PYTHON}" -m pip list --outdated --format=freeze | grep -v '^\-e' | cut -d = -f 1  | xargs -n1 "${PYTHON}" -m pip install -U --force-reinstall
+             "${PYTHON}" -m pip install --upgrade -r requirements.txt
+
       - name: Install PyInstaller
         if: matrix.goal == 'build'
         run: |
           git clone https://github.com/pyinstaller/pyinstaller.git
           cd pyinstaller
           export latest_release=$(git tag --list | grep -v dev | grep -v rc | sort -Vr | head -n1)
+          echo $latest_release
+          export latest_release="v5.3"
           git checkout "${latest_release}"
           # remove pre-compiled bootloaders so we fail if bootloader compile fails
           rm -rf PyInstaller/bootloader/*-*/*
@@ -306,14 +322,9 @@ jobs:
           fi
           echo "PyInstaller build arguments: ${PYINSTALLER_BUILD_ARGS}"
           "${PYTHON}" ./waf all $PYINSTALLER_BUILD_ARGS
-          cd ../..
-          "${PYTHON}" -m pip install pyinstaller
-
-      - name: Install pip requirements
-        run: |
-             set +e
-             "${PYTHON}" -m pip list --outdated --format=freeze | grep -v '^\-e' | cut -d = -f 1  | xargs -n1 "${PYTHON}" -m pip install -U --force-reinstall
-             "${PYTHON}" -m pip install --upgrade -r requirements.txt
+          cd ..
+          "${PYTHON}" -m pip install .
+          "${PYTHON}" -m PyInstaller --version
 
       - name: Build GYB with PyInstaller
         if: matrix.goal != 'test'
