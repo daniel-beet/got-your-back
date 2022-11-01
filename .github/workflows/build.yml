@@ -69,7 +69,8 @@ jobs:
           path: |
             ./ssl
             ./python
-          key: ${{ matrix.jid }}-20220926
+            ./cpython
+          key: ${{ matrix.jid }}-20221101
 
       - name: Use pre-compiled Python
         if: matrix.python != ''
@@ -102,6 +103,17 @@ jobs:
           jid: ${{ matrix.jid }}
         run: |
           echo "We are running on ${RUNNER_OS}"
+          if [[ "${arch}" == "Win64" ]]; then
+            PYEXTERNALS_PATH="amd64"
+            PYBUILDRELEASE_ARCH="x64"
+            OPENSSL_CONFIG_TARGET="VC-WIN64A"
+            CHOC_OPS=""
+          elif [[ "${arch}" == "Win32" ]]; then
+            PYEXTERNALS_PATH="win32"
+            PYBUILDRELEASE_ARCH="Win32"
+            OPENSSL_CONFIG_TARGET="VC-WIN32"
+            CHOC_OPS="--forcex86"
+          fi
           if [[ "${RUNNER_OS}" == "macOS" ]]; then
             MAKE=make
             MAKEOPT="-j$(sysctl -n hw.logicalcpu)"
@@ -119,18 +131,7 @@ jobs:
             MAKE=nmake
             MAKEOPT=""
             PERL="c:\strawberry\perl\bin\perl.exe"
-            echo "PYTHON=${PYTHON_INSTALL_PATH}\python.exe" >> $GITHUB_ENV
-          fi
-          if [[ "${arch}" == "Win64" ]]; then
-            PYEXTERNALS_PATH="amd64"
-            PYBUILDRELEASE_ARCH="x64"
-            OPENSSL_CONFIG_TARGET="VC-WIN64A"
-            CHOC_OPS=""
-          elif [[ "${arch}" == "Win32" ]]; then
-            PYEXTERNALS_PATH="win32"
-            PYBUILDRELEASE_ARCH="Win32"
-            OPENSSL_CONFIG_TARGET="VC-WIN32"
-            CHOC_OPS="--forcex86"
+            echo "PYTHON=${PYTHON_SOURCE_PATH}/PCbuild/${PYEXTERNALS_PATH}/python.exe" >> $GITHUB_ENV
           fi
           echo "We'll run make with: ${MAKEOPT}"
           echo "JID=${jid}" >> $GITHUB_ENV
@@ -240,7 +241,7 @@ jobs:
           $env:OPENSSL_EXT_TARGET_PATH = "${env:OPENSSL_EXT_PATH}${env:PYEXTERNALS_PATH}"
           echo "Copying our OpenSSL to ${env:OPENSSL_EXT_TARGET_PATH}"
           mkdir "${env:OPENSSL_EXT_TARGET_PATH}\include\openssl\"
-          Copy-Item -Path "${env:OPENSSL_SOURCE_PATH}\LICENSE.txt" -Destination "${env:OPENSSL_EXT_TARGET_PATH}\LICENSE"
+          Copy-Item -Path "${env:OPENSSL_SOURCE_PATH}\LICENSE.txt" -Destination "${env:OPENSSL_EXT_TARGET_PATH}\LICENSE" -verbose
           cp "$env:OPENSSL_INSTALL_PATH\lib\*" "${env:OPENSSL_EXT_TARGET_PATH}"
           cp "$env:OPENSSL_INSTALL_PATH\bin\*" "${env:OPENSSL_EXT_TARGET_PATH}"
           cp "$env:OPENSSL_INSTALL_PATH\include\openssl\*" "${env:OPENSSL_EXT_TARGET_PATH}\include\openssl\"
@@ -260,18 +261,9 @@ jobs:
         run: |
           cd "${env:PYTHON_SOURCE_PATH}"
           # We need out custom openssl.props which uses OpenSSL 3 DLL names
-          Copy-Item -Path "${env:GITHUB_WORKSPACE}\openssl.props" -Destination PCBuild\
+          Copy-Item -Path "${env:GITHUB_WORKSPACE}\openssl.props" -Destination PCBuild\ -verbose
           echo "Building for ${env:PYBUILDRELEASE_ARCH}..."
           PCBuild\build.bat -m --pgo -c Release -p "${env:PYBUILDRELEASE_ARCH}"
-
-      - name: Windows Install Python
-        if: matrix.goal == 'build' && matrix.os == 'windows-2022' && steps.cache-python-ssl.outputs.cache-hit != 'true'
-        shell: powershell
-        run: |
-          cd "${env:PYTHON_SOURCE_PATH}"
-          mkdir "${env:PYTHON_INSTALL_PATH}\lib"
-          Copy-Item -Path "PCBuild\${env:PYEXTERNALS_PATH}\*" "${env:PYTHON_INSTALL_PATH}\"
-          Copy-Item -Path "${env:PYTHON_SOURCE_PATH}\Lib\*" "${env:PYTHON_INSTALL_PATH}\lib\" -recurse
 
       - name: Mac/Linux Build Python
         if: matrix.goal == 'build' && matrix.os != 'windows-2022' && steps.cache-python-ssl.outputs.cache-hit != 'true'
@@ -312,7 +304,7 @@ jobs:
           cd pyinstaller
           export latest_release=$(git tag --list | grep -v dev | grep -v rc | sort -Vr | head -n1)
           echo $latest_release
-          export latest_release="v5.3"
+          # export latest_release="v5.3"
           git checkout "${latest_release}"
           # remove pre-compiled bootloaders so we fail if bootloader compile fails
           rm -rf PyInstaller/bootloader/*-*/*
@@ -397,7 +389,7 @@ jobs:
         if: matrix.os == 'macos-12' && matrix.goal != 'test'
         run: |
           MACOSVERSION=$(defaults read loginwindow SystemVersionStampAsString)
-          GYB_ARCHIVE="gyb-${GYBVERSION}-macos-x86_64-MacOS${MACOSVERSION}.tar.xz"
+          GYB_ARCHIVE="gyb-${GYBVERSION}-macos-x86_64.tar.xz"
           tar cfJ $GYB_ARCHIVE gyb/
 
       - name: Windows package GYB
@@ -465,25 +457,19 @@ jobs:
               $gyb --action backup --email $gyb_user --service-account --local-folder sa-backup
               $gyb --action backup-chat --email $gyb_user
 
-      - name: Upload to Google Drive, build only.
-        continue-on-error: true
-        if: github.event_name == 'push' && matrix.goal == 'build' && github.repository_owner == 'GAM-team'
-        env:
-          GHCLIENT: ${{ secrets.GHCLIENT }}
-        run: |
-              # Use GAM to upload archive to Drive
-              bash <(curl -s -S -L https://gam-shortn.appspot.com/install-gam) -l
-              for gybfile in gyb-$GYBVERSION-*; do
-                echo "Uploading file ${gybfile} to Google Drive..."
-                export OAUTHSERVICEFILE="${gybpath}/oauth2service.json"
-                fileid=$(~/bin/gam/gam user gyb-project-cp6-xqa-vk3@gyb-project-cp6-xqa-vk3.iam.gserviceaccount.com add drivefile localfile $gybfile drivefilename $GYBVERSION-${GITHUB_SHA:0:7}-$gybfile parentid 1nM76gFy3aW1orENiyJGW1v4wmtoNAkQO returnidonly)
-                echo "file uploaded as ${fileid}, setting ACL..."
-                ~/bin/gam/gam user gyb-project-cp6-xqa-vk3@gyb-project-cp6-xqa-vk3.iam.gserviceaccount.com add drivefileacl $fileid anyone role reader withlink
-              done
+      - name: VirusTotal Scan
+        uses: crazy-max/ghaction-virustotal@v3
+        if: (github.event_name == 'push' || github.event_name == 'schedule') && matrix.goal != 'test'
+        with:
+          vt_api_key: ${{ secrets.VT_API_KEY }}
+          files: |
+            *.tar.xz
+            *.zip
+            *.msi
 
       - name: Archive artifacts
         uses: actions/upload-artifact@v2
-        if: github.event_name == 'push' && matrix.goal != 'test'
+        if: (github.event_name == 'push' || github.event_name == 'schedule') && matrix.goal != 'test'
         with:
           name: gyb-binaries
           path: |
