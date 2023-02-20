@@ -35,10 +35,6 @@ jobs:
             jid: 3
             goal: build
             arch: Win64
-          - os: windows-2022
-            jid: 4
-            goal: build
-            arch: Win32
           - os: [self-hosted, linux, arm64]
             jid: 5
             goal: build
@@ -70,7 +66,7 @@ jobs:
             ./ssl
             ./python
             ./cpython
-          key: ${{ matrix.jid }}-20221101
+          key: ${{ matrix.jid }}-20230219
 
       - name: Use pre-compiled Python
         if: matrix.python != ''
@@ -304,13 +300,12 @@ jobs:
           cd pyinstaller
           export latest_release=$(git tag --list | grep -v dev | grep -v rc | sort -Vr | head -n1)
           echo $latest_release
-          # export latest_release="v5.3"
           git checkout "${latest_release}"
           # remove pre-compiled bootloaders so we fail if bootloader compile fails
           rm -rf PyInstaller/bootloader/*-*/*
           cd bootloader
-          if [[ "${arch}" == "Win32" ]]; then
-            export PYINSTALLER_BUILD_ARGS="--target-arch=32bit"
+          if [[ "${arch}" == "Win64" ]]; then
+            export PYINSTALLER_BUILD_ARGS="--target-arch=64bit"
           fi
           echo "PyInstaller build arguments: ${PYINSTALLER_BUILD_ARGS}"
           "${PYTHON}" ./waf all $PYINSTALLER_BUILD_ARGS
@@ -382,7 +377,7 @@ jobs:
       - name: Linux package staticx GYB
         if: runner.os == 'Linux' && matrix.goal != 'test'
         run: |
-          GYB_ARCHIVE="gyb-${GYBVERSION}-linux--$(uname -m)-legacy.tar.xz"
+          GYB_ARCHIVE="gyb-${GYBVERSION}-linux-$(uname -m)-legacy.tar.xz"
           tar cfJ $GYB_ARCHIVE gyb/
 
       - name: MacOS package GYB
