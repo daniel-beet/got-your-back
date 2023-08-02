@@ -24,7 +24,7 @@ global __name__, __author__, __email__, __version__, __license__
 __program_name__ = 'Got Your Back: Gmail Backup'
 __author__ = 'Jay Lee'
 __email__ = 'jay0lee@gmail.com'
-__version__ = '1.73'
+__version__ = '1.74'
 __license__ = 'Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0)'
 __website__ = 'jaylee.us/gyb'
 __db_schema_version__ = '6'
@@ -49,6 +49,7 @@ from io import BytesIO
 import sys
 import os
 import os.path
+from importlib.metadata import version as lib_version
 import ipaddress
 import multiprocessing
 from urllib.parse import urlencode, urlparse, parse_qs
@@ -69,7 +70,6 @@ from email.mime.multipart import MIMEMultipart
 from email.utils import (format_datetime,
                          make_msgid)
 import hashlib
-import pkg_resources
 import re
 import string
 from itertools import islice, chain
@@ -94,7 +94,7 @@ import fmbox
 import labellang
 
 def getGYBVersion(divider="\n"):
-  api_client_ver = pkg_resources.get_distribution("google-api-python-client").version
+  api_client_ver = lib_version('google-api-python-client')
   return ('Got Your Back %s~DIV~%s~DIV~%s - %s~DIV~Python %s.%s.%s %s-bit \
 %s~DIV~google-api-client %s~DIV~%s %s' % (__version__, __website__, __author__, __email__,
 sys.version_info[0], sys.version_info[1], sys.version_info[2],
