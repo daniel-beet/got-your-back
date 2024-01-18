@@ -11,7 +11,7 @@ defaults:
     shell: bash
 
 env:
-  OPENSSL_CONFIG_OPTS: no-fips
+  OPENSSL_CONFIG_OPTS: no-fips --api=3.0.0
   OPENSSL_INSTALL_PATH: ${{ github.workspace }}/ssl
   OPENSSL_SOURCE_PATH: ${{ github.workspace }}/openssl
   PYTHON_INSTALL_PATH: ${{ github.workspace }}/python
@@ -45,15 +45,15 @@ jobs:
             arch: aarch64
           - os: ubuntu-22.04
             goal: test
-            python: "3.8"
+            python: "3.9"
             jid: 7
           - os: ubuntu-22.04
             goal: test
-            python: "3.9"
+            python: "3.10"
             jid: 8
           - os: ubuntu-22.04
             goal: test
-            python: "3.10"
+            python: "3.11"
             jid: 9
 
     steps:
@@ -70,7 +70,7 @@ jobs:
             ./ssl
             ./python
             ./cpython
-          key: ${{ matrix.jid }}-20230802-01
+          key: ${{ matrix.jid }}-2024-01-17
 
       - name: Use pre-compiled Python
         if: matrix.python != ''
@@ -294,8 +294,9 @@ jobs:
       - name: Install pip requirements
         run: |
              set +e
-             "${PYTHON}" -m pip list --outdated --format=freeze | grep -v '^\-e' | cut -d = -f 1  | xargs -n1 "${PYTHON}" -m pip install -U --force-reinstall
-             "${PYTHON}" -m pip install --upgrade -r requirements.txt
+             outdated=$("$PYTHON" -m pip list --outdated | grep -v 'Package' | grep -v '\-\-\-' | cut -d ' ' -f 1)
+             "$PYTHON" -m pip install --upgrade --force-reinstall "$outdated"
+             "$PYTHON" -m pip install --upgrade -r requirements.txt
 
       - name: Install PyInstaller
         if: matrix.goal == 'build'
