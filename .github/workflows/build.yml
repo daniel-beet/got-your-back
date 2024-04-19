@@ -21,6 +21,7 @@ jobs:
   build:
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-20.04
@@ -31,7 +32,7 @@ jobs:
             jid: 2
             goal: build
             arch: x86_64
-          - os: [self-hosted, macOS, ARM64]
+          - os: macos-14
             jid: 3
             goal: build
             arch: aarch64
@@ -63,18 +64,23 @@ jobs:
           fetch-depth: 0
 
       - name: Cache the build
+        if: matrix.goal == 'build'
         id: cache-python-ssl
-        uses: actions/cache@v2
+        uses: actions/cache@v4
         with:
           path: |
-            ./ssl
-            ./python
-            ./cpython
-          key: ${{ matrix.jid }}-2024-01-17
+            cache.tar.xz
+          key: ${{ matrix.jid }}-2024-04-18
+
+      - name: Untar Cache archive
+        if: matrix.goal == 'build' && steps.cache-python-ssl.outputs.cache-hit == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          tar xvvf cache.tar.xz
 
       - name: Use pre-compiled Python
         if: matrix.python != ''
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
 
@@ -400,8 +406,8 @@ jobs:
           /c/Program\ Files/7-Zip/7z.exe a -tzip $GYB_ARCHIVE gyb -xr!.svn
           mkdir gyb-64
           cp -rf gyb/* gyb-64/;
-          /c/Program\ Files\ \(x86\)/WiX\ Toolset\ v3.11/bin/candle.exe -arch x64 windows-gyb.wxs
-          /c/Program\ Files\ \(x86\)/WiX\ Toolset\ v3.11/bin/light.exe -ext /c/Program\ Files\ \(x86\)/WiX\ Toolset\ v3.11/bin/WixUIExtension.dll windows-gyb.wixobj -o gyb-$GYBVERSION-windows-x86_64.msi || true;
+          /c/Program\ Files\ \(x86\)/WiX\ Toolset\ v3.14/bin/candle.exe -arch x64 windows-gyb.wxs
+          /c/Program\ Files\ \(x86\)/WiX\ Toolset\ v3.14/bin/light.exe -ext /c/Program\ Files\ \(x86\)/WiX\ Toolset\ v3.14/bin/WixUIExtension.dll windows-gyb.wixobj -o gyb-$GYBVERSION-windows-x86_64.msi || true;
           rm -f *.wixpdb
 
       - name: Basic Tests build jobs only
@@ -463,16 +469,27 @@ jobs:
         with:
           vt_api_key: ${{ secrets.VT_API_KEY }}
           files: |
-            *.tar.xz
-            *.zip
-            *.msi
+            gyb*.tar.xz
+            gyb*.zip
+            gyb*.msi
 
       - name: Archive artifacts
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v4
         if: (github.event_name == 'push' || github.event_name == 'schedule') && matrix.goal == 'build'
         with:
-          name: gyb-binaries
+          name: gyb-binaries-${{ env.OS }}-${{ env.arch }}-${{ matrix.jid }}
           path: |
-            *.tar.xz
-            *.zip
-            *.msi
+            gyb*.tar.xz
+            gyb*.zip
+            gyb*.msi
+
+      - name: Tar Cache archive
+        if: matrix.goal == 'build' && steps.cache-python-ssl.outputs.cache-hit != 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then
+            tar_folder="cpython/ ssl/"
+          else
+            tar_folder="ssl/ python/"
+          fi
+          tar cJvvf cache.tar.xz $tar_folder

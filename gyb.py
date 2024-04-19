@@ -24,7 +24,7 @@ global __name__, __author__, __email__, __version__, __license__
 __program_name__ = 'Got Your Back: Gmail Backup'
 __author__ = 'Jay Lee'
 __email__ = 'jay0lee@gmail.com'
-__version__ = '1.80'
+__version__ = '1.81'
 __license__ = 'Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0)'
 __website__ = 'jaylee.us/gyb'
 __db_schema_version__ = '6'
@@ -2092,7 +2092,7 @@ def main(argv):
   # BACKUP #
   if options.action == 'backup':
     if options.batch_size == 0:
-      options.batch_size = 100
+      options.batch_size = 10
     page_message = 'Got %%total_items%% Message IDs'
     messages_to_process = callGAPIpages(gmail.users().messages(),
       'list', items='messages', page_message=page_message, maxResults=500,
@@ -2175,7 +2175,7 @@ def main(argv):
   # BACKUP-CHAT
   elif options.action == 'backup-chat':
     if options.batch_size == 0:
-      options.batch_size = 50
+      options.batch_size = 10
     if options.gmail_search == '-is:chat':
       options.gmail_search = 'is:chat'
     page_message = 'Got %%total_items%% Chat IDs'
@@ -2229,7 +2229,7 @@ def main(argv):
   # RESTORE #
   elif options.action == 'restore':
     if options.batch_size == 0:
-      options.batch_size = 15 
+      options.batch_size = 1
     resumedb = os.path.join(options.local_folder, 
                             "%s-restored.sqlite" % options.email)
     if options.noresume:
@@ -2357,7 +2357,7 @@ def main(argv):
  # RESTORE-MBOX #
   elif options.action == 'restore-mbox':
     if options.batch_size == 0:
-      options.batch_size = 15
+      options.batch_size = 1
     resumedb = os.path.join(options.local_folder,
                             "%s-restored.sqlite" % options.email)
     if options.noresume:
@@ -2647,7 +2647,7 @@ def main(argv):
   # COUNT 
   elif options.action == 'count':
     if options.batch_size == 0:
-      options.batch_size = 100
+      options.batch_size = 10
     messages_to_process = callGAPIpages(gmail.users().messages(),
       'list', items='messages', maxResults=500,
       userId='me', includeSpamTrash=options.spamtrash, q=options.gmail_search,
@@ -2776,7 +2776,7 @@ otaBytesByService,quotaType')
   # ESTIMATE #
   elif options.action == 'estimate':
     if options.batch_size == 0:
-      options.batch_size = 100
+      options.batch_size = 10
     page_message = 'Got %%total_items%% Message IDs'
     messages_to_process = callGAPIpages(gmail.users().messages(),
       'list', items='messages', page_message=page_message,
