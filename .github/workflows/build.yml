@@ -21,6 +21,7 @@ env:
   OPENSSL_SOURCE_PATH: ${{ github.workspace }}/openssl
   PYTHON_INSTALL_PATH: ${{ github.workspace }}/python
   PYTHON_SOURCE_PATH: ${{ github.workspace }}/cpython
+  WINDOWS_CODESIGN_CERT_HASH: 590dc5bb10dfb31dbff38c0e2f9c35ef0f6d0e9e
 
 jobs:
   build:
@@ -29,16 +30,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-20.04
+          - os: ubuntu-22.04
             jid: 1
             goal: build
             arch: x86_64
-          - os: ubuntu-20.04
+          - os: ubuntu-22.04
             jid: 2
             goal: build
             arch: x86_64
             staticx: yes
-          - os: macos-12
+          - os: macos-13
             jid: 3
             goal: build
             arch: x86_64
@@ -50,31 +51,31 @@ jobs:
             jid: 5
             goal: build
             arch: Win64
-          - os: [self-hosted, linux, arm64]
+          - os: ubuntu-22.04-arm
             jid: 6
             goal: build
             arch: aarch64
-          - os: [self-hosted, linux, arm64]
+          - os: ubuntu-22.04-arm
             jid: 7
             goal: build
             arch: aarch64
             staticx: yes
-          - os: ubuntu-22.04
+          - os: ubuntu-24.04
             goal: test
             python: "3.9"
             jid: 8
-          - os: ubuntu-22.04
+          - os: ubuntu-24.04
             goal: test
             python: "3.10"
             jid: 9
-          - os: ubuntu-22.04
+          - os: ubuntu-24.04
             goal: test
             python: "3.11"
             jid: 10
-          - os: ubuntu-22.04
+          - os: ubuntu-24.04
             goal: test
-            python: "3.13-dev"
-            jid: 12
+            python: "3.13"
+            jid: 11
 
     steps:
       - uses: actions/checkout@master
@@ -89,7 +90,7 @@ jobs:
         with:
           path: |
             cache.tar.xz
-          key: ${{ matrix.jid }}-2024-08-09
+          key: ${{ matrix.jid }}-2025-08.27
 
       - name: Untar Cache archive
         if: matrix.goal == 'build' && steps.cache-python-ssl.outputs.cache-hit == 'true'
@@ -102,6 +103,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
+          allow-prereleases: true
 
       - name: Set env variables for test
         if: matrix.goal == 'test'
@@ -175,6 +177,13 @@ jobs:
           echo "OPENSSL_CONFIG_TARGET=${OPENSSL_CONFIG_TARGET}" >> $GITHUB_ENV
           echo "CHOC_OPS=${CHOC_OPS}" >> $GITHUB_ENV
           echo "LD_LIBRARY_PATH=${OPENSSL_INSTALL_PATH}/lib:${PYTHON_INSTALL_PATH}/lib:/usr/local/lib" >> $GITHUB_ENV
+
+      - name: MacOS import developer certificates for signing
+        if: runner.os == 'macOS'
+        uses: apple-actions/import-codesign-certs@95e84a1a18f2bdbc5c6ab9b7f4429372e4b13a8b # 5.0.3
+        with:
+          p12-file-base64: ${{ secrets.CERTIFICATES_P12 }}
+          p12-password: ${{ secrets.CERTIFICATES_P12_PASSWORD }}
 
       - name: Get latest stable OpenSSL source
         if: matrix.goal == 'build' && steps.cache-python-ssl.outputs.cache-hit != 'true'
@@ -353,6 +362,10 @@ jobs:
       - name: Build GYB with PyInstaller
         if: matrix.goal == 'build'
         run: |
+             if [[ "${RUNNER_OS}" == "macOS" ]]; then
+               # Tell our spec to use our code sign certificate
+               export codesign_identity="Jay Lee"
+             fi
              "${PYTHON}" -m PyInstaller --clean --distpath=gyb gyb.spec
              if [ -x "$(command -v realpath)" ]; then
                realpath=realpath
@@ -371,6 +384,9 @@ jobs:
       - name: Linux install patchelf/staticx
         if: matrix.staticx == 'yes'
         run: |
+          sudo apt-get -qq --yes update
+          # arm64 needs to build a wheel and needs scons to build
+          sudo apt-get -qq --yes install scons
           "${PYTHON}" -m pip install --upgrade patchelf-wrapper
           "${PYTHON}" -m pip install --upgrade staticx
 
@@ -387,6 +403,84 @@ jobs:
           esac
           echo "ldlib=${ldlib}"
           $PYTHON -m staticx -l "${ldlib}" gyb/gyb gyb/gyb-staticx
+
+      - name: Install WinAppDriver
+        if: runner.os == 'Windows'
+        run: |
+          choco install -y winappdriver
+
+      - name: Enabled dev mode for WinAppDriver
+        if: runner.os == 'Windows'
+        shell: cmd
+        run : |
+         reg add "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" /t REG_DWORD /f /v "AllowDevelopmentWithoutDevLicense" /d "1"
+
+      - name: Install appium and totp tools
+        if: runner.os == 'Windows'
+        run: |
+          echo "Installing appium..."
+          npm install -g appium
+          echo "Installing totp-generator..."
+          npm install "totp-generator"
+          echo "Installing wdio..."
+          npm install @wdio/cli
+          echo "Installing appium win driver..."
+          appium driver install windows
+
+      - name: Install Certum MSI
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $url = "https://files.certum.eu/software/SimplySignDesktop/Windows/9.3.2.67/SimplySignDesktop-9.3.2.67-64-bit-en.msi"
+          $file = "SimplySignDesktop-9.3.2.67-64-bit-en.msi"
+          Invoke-WebRequest $url -OutFile $file
+          $log = "install.log" 
+          $procMain = Start-Process "msiexec" "/i `"$file`" /qn /l*! `"$log`"" -NoNewWindow -PassThru
+          $procLog = Start-Process "powershell" "Get-Content -Path `"$log`" -Wait" -NoNewWindow -PassThru 
+          $procMain.WaitForExit() 
+          $procLog.Kill()
+
+      - name: Login to Certum
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          TOTP_SECRET: ${{ secrets.TOTP_SECRET }}
+        run: |
+          # disable win private firewall that interferes with appium server
+          Set-NetFirewallProfile -Profile Private -Enabled False
+          $appiumCmd = Get-Command appium
+          $appiumPath = $appiumCmd.Path
+          Start-Process -Filepath "powershell.exe" -ArgumentList "-File", $appiumPath, "--address", "127.0.0.1", "--log-level", "error"
+          Start-Sleep -Seconds 10
+          write-host "appium started"
+          write-host "running SimplySignDesktop login..."
+          node tools/ssd.mjs --log-level warn
+          write-host "sleeping during login..."
+          Start-Sleep 10
+
+      - name: Sign gyb.exe
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          write-Host "Signing ${env:gyb}...."
+          # Always explicitely use x64 version os signtool.exe, arm64 version apparently can't
+          # see Certum certs since SimplySignDesktop is x64-only today.
+          Start-Process -Wait -NoNewWindow -ErrorAction Continue -FilePath 'C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe'  -ArgumentList "sign", "/sha1", "590dc5bb10dfb31dbff38c0e2f9c35ef0f6d0e9e", "/tr", "http://time.certum.pl", "/td", "SHA256", "/fd", "SHA256", "/v", "$env:gyb"
+          write-Host "Verifying signature of ${env:gyb}...."
+          # verify signature. If we failed to sign we should fail to verify and die.
+          & 'C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe' verify /pa /v "$env:gyb"
+
+      - name: MacOS send binary for Apple notarization
+        if: runner.os == 'macOS'
+        env:
+          ASP_NOTARIZE: ${{ secrets.ASP_NOTARIZE }}
+        run: |
+          # Apple wants some kind of "package" submitted so just add gyb to a .zip
+          # name it something we can track and link in Apple's notarize process
+          zipfilename="./gyb-${RUNNER_ARCH}-${GITHUB_RUN_ID}-${GITHUB_RUN_NUMBER}.zip"
+          zip -r "$zipfilename" "$gybpath"
+          xcrun notarytool submit --apple-id "jay0lee@gmail.com" --password "$ASP_NOTARIZE" --team-id GZ85H2DRLM "$zipfilename"
+          rm -v "$zipfilename"
 
       - name: Attest Binary Provenance
         uses: actions/attest-build-provenance@v1
@@ -432,11 +526,34 @@ jobs:
           cp gyb-setup.bat gyb
           GYB_ARCHIVE=gyb-$GYBVERSION-windows-x86_64.zip
           /c/Program\ Files/7-Zip/7z.exe a -tzip $GYB_ARCHIVE gyb -xr!.svn
+          export MSI_FILENAME="${GITHUB_WORKSPACE}/gyb-${GYBVERSION}-windows-x86_64.msi"
           mkdir gyb-64
           cp -rf gyb/* gyb-64/;
           /c/Program\ Files\ \(x86\)/WiX\ Toolset\ v3.14/bin/candle.exe -arch x64 windows-gyb.wxs
-          /c/Program\ Files\ \(x86\)/WiX\ Toolset\ v3.14/bin/light.exe -ext /c/Program\ Files\ \(x86\)/WiX\ Toolset\ v3.14/bin/WixUIExtension.dll windows-gyb.wixobj -o gyb-$GYBVERSION-windows-x86_64.msi || true;
+          /c/Program\ Files\ \(x86\)/WiX\ Toolset\ v3.14/bin/light.exe -ext /c/Program\ Files\ \(x86\)/WiX\ Toolset\ v3.14/bin/WixUIExtension.dll windows-gyb.wixobj -o "$MSI_FILENAME" || true;
           rm -f *.wixpdb
+          echo "MSI_FILENAME=${MSI_FILENAME}" >> $GITHUB_ENV
+
+      - name: Sign GYB MSI
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          write-Host "Signing ${env:MSI_FILENAME}...."
+          # Always explicitely use x64 version os signtool.exe, arm64 version apparently can't
+          # see Certum certs since SimplySignDesktop is x64-only today.
+          Start-Process -Wait -NoNewWindow -ErrorAction Continue -FilePath 'C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe'  -ArgumentList "sign", "/sha1", "590dc5bb10dfb31dbff38c0e2f9c35ef0f6d0e9e", "/tr", "http://time.certum.pl", "/td", "SHA256", "/fd", "SHA256", "/v", "$env:MSI_FILENAME"
+          write-Host "Verifying signature of ${env:MSI_FILENAME}...."
+          # verify signature. If we failed to sign we should fail to verify and die.
+          & 'C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe' verify /pa /v "$env:MSI_FILENAME"
+
+      - name: Attest Build Archive Provenance
+        uses: actions/attest-build-provenance@v1
+        if: (github.event_name == 'push' || github.event_name == 'schedule') && matrix.goal == 'build'
+        with:
+          subject-path: |
+            gyb*.tar.xz
+            gyb*.zip
+            gyb*.msi
 
       - name: Basic Tests build jobs only
         if: matrix.goal == 'build' && steps.cache-python-ssl.outputs.cache-hit != 'true'
@@ -459,7 +576,7 @@ jobs:
           echo "We successfully compiled Python ${this_python} and OpenSSL ${this_openssl}"
 
       - name: Live API tests push only
-        if: (github.event_name == 'push' || github.event_name == 'schedule') && github.repository_owner == 'GAM-team'
+        if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.repository_owner == 'GAM-team'
         env:
           PASSCODE: ${{ secrets.PASSCODE }}
         run: |
@@ -491,28 +608,9 @@ jobs:
               $gyb --action backup --email $gyb_user --service-account --local-folder sa-backup
               $gyb --action backup-chat --email $gyb_user
 
-      - name: Attest Build Archive Provenance
-        uses: actions/attest-build-provenance@v1
-        if: (github.event_name == 'push' || github.event_name == 'schedule') && matrix.goal == 'build'
-        with:
-          subject-path: |
-            gyb*.tar.xz
-            gyb*.zip
-            gyb*.msi
-
-      - name: VirusTotal Scan
-        uses: crazy-max/ghaction-virustotal@v4
-        if: (github.event_name == 'push' || github.event_name == 'schedule') && matrix.goal == 'build'
-        with:
-          vt_api_key: ${{ secrets.VT_API_KEY }}
-          files: |
-            gyb*.tar.xz
-            gyb*.zip
-            gyb*.msi
-
       - name: Archive artifacts
         uses: actions/upload-artifact@v4
-        if: (github.event_name == 'push' || github.event_name == 'schedule') && matrix.goal == 'build'
+        if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && matrix.goal == 'build'
         with:
           name: gyb-binaries-${{ env.OS }}-${{ env.arch }}-${{ matrix.jid }}
           path: |
@@ -530,3 +628,61 @@ jobs:
             tar_folder="ssl/ python/"
           fi
           tar cJvvf cache.tar.xz $tar_folder
+
+
+  merge:
+    if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-24.04
+    needs: build
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - name: Merge Artifacts
+        uses: actions/upload-artifact/merge@v4
+        with:
+          name: gyb-binaries
+          pattern: gyb-binaries-*
+
+  publish:
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-24.04
+    needs: merge
+    permissions:
+      contents: write
+      packages: write
+      pull-requests: read
+
+    steps:
+
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # 5.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Download artifacts
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # 5.0.0
+
+      - name: VirusTotal Scan
+        uses: crazy-max/ghaction-virustotal@d34968c958ae283fe976efed637081b9f9dcf74f # 4.2.0
+        with:
+          vt_api_key: ${{ secrets.VT_API_KEY }}
+          files: |
+            gyb-binaries/*
+
+      - name: Set datetime version string
+        id: dateversion
+        run: |
+          export dateversion="$(date  +'%Y%m%d.%H%M%S')"
+          echo "Date version: ${dateversion}"
+          echo "dateversion=${dateversion}" >> $GITHUB_OUTPUT
+
+      - name: Publish draft release
+        uses: softprops/action-gh-release@72f2c25fcb47643c292f7107632f7a47c1df5cd8 # 2.3.2
+        with:
+          draft: true
+          prerelease: false
+          tag_name: "${{ steps.dateversion.outputs.dateversion }}"
+          fail_on_unmatched_files: true
+          files: |
+            gyb-binaries/*
