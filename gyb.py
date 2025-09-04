@@ -24,7 +24,7 @@ global __name__, __author__, __email__, __version__, __license__
 __program_name__ = 'Got Your Back: Gmail Backup'
 __author__ = 'Jay Lee'
 __email__ = 'jay0lee@gmail.com'
-__version__ = '1.93'
+__version__ = '1.94'
 __license__ = 'Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0)'
 __website__ = 'git.io/gyb'
 __db_schema_version__ = '6'
@@ -693,6 +693,10 @@ def buildGAPIObject(api, httpc=None):
     extra_args.update(dict(config.items('extra-args')))
   version = getAPIVer(api)
   client_options = getClientOptions()
+  if api in ['drive', 'oauth2']:
+    discoveryServiceUrl = None
+  else:
+    discoveryServiceUrl = V2_DISCOVERY_URI
   try:
     service = build(
             api,
@@ -700,6 +704,7 @@ def buildGAPIObject(api, httpc=None):
             http=httpc,
             cache_discovery=False,
             client_options=client_options,
+            discoveryServiceUrl=discoveryServiceUrl,
             static_discovery=False)
   except googleapiclient.errors.UnknownApiNameOrVersion:
     disc_file = os.path.join(options.config_folder, f'{api}-{version}.json')
@@ -757,6 +762,10 @@ def buildGAPIServiceObject(api, soft_errors=False):
   credentials.refresh(request)
   version = getAPIVer(api)
   client_options = getClientOptions()
+  if api in ['drive', 'oauth2']:
+    discoveryServiceUrl = None
+  else:
+    discoveryServiceUrl = V2_DISCOVERY_URI
   try:
     service = build(
             api,
@@ -764,6 +773,7 @@ def buildGAPIServiceObject(api, soft_errors=False):
             http=httpc,
             cache_discovery=False,
             client_options=client_options,
+            discoveryServiceUrl=discoveryServiceUrl,
             static_discovery=False)
     service._http = google_auth_httplib2.AuthorizedHttp(credentials, http=httpc)
     return service

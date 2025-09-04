@@ -30,19 +30,39 @@ print(version_info)
 proot = os.path.dirname(importlib.import_module('httplib2').__file__)
 extra_files = [(os.path.join(proot, 'cacerts.txt'), 'httplib2')]
 
-extra_files += copy_metadata('google-api-python-client')
+excludes = [
+    'pkg_resources',
+    'FixTk',
+    'tcl',
+    'tk',
+    '_tkinter',
+    'tkinter',
+    'Tkinter',
+]
+#extra_files += copy_metadata('google-api-python-client')
 
 a = Analysis(['gyb.py'],
-             excludes=['FixTk', 'tcl', 'tk', '_tkinter', 'tkinter', 'Tkinter'],
+             excludes=excludes,
              datas=extra_files,
              hiddenimports=[],
-             hookspath=None,
-             runtime_hooks=None)
+             hooksconfig={},
+             hookspath=['tools/hooks'],
+             runtime_hooks=[],
+             win_no_prefer_redirects=False,
+             win_private_assemblies=False,
+             cipher=None,
+             noarchive=False,
+             )
 
 for d in a.datas:
     if 'pyconfig' in d[0]:
+        print(f' manually removing {d[0]}')
         a.datas.remove(d)
-        break
+    elif 'googleapiclient/discovery_cache/documents/' in d[0]:
+        print(f' manually removing discovery JSON {d[0]}')
+        a.datas.remove(d)
+    else:
+        print(f' LEAVING {d}')
 
 pyz = PYZ(a.pure)
 
