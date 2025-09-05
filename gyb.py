@@ -24,7 +24,7 @@ global __name__, __author__, __email__, __version__, __license__
 __program_name__ = 'Got Your Back: Gmail Backup'
 __author__ = 'Jay Lee'
 __email__ = 'jay0lee@gmail.com'
-__version__ = '1.94'
+__version__ = '1.95'
 __license__ = 'Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0)'
 __website__ = 'git.io/gyb'
 __db_schema_version__ = '6'
@@ -705,7 +705,8 @@ def buildGAPIObject(api, httpc=None):
             cache_discovery=False,
             client_options=client_options,
             discoveryServiceUrl=discoveryServiceUrl,
-            static_discovery=False)
+            static_discovery=False,
+            num_retries=10)
   except googleapiclient.errors.UnknownApiNameOrVersion:
     disc_file = os.path.join(options.config_folder, f'{api}-{version}.json')
     if os.path.isfile(disc_file):
@@ -774,7 +775,8 @@ def buildGAPIServiceObject(api, soft_errors=False):
             cache_discovery=False,
             client_options=client_options,
             discoveryServiceUrl=discoveryServiceUrl,
-            static_discovery=False)
+            static_discovery=False,
+            num_retries=10)
     service._http = google_auth_httplib2.AuthorizedHttp(credentials, http=httpc)
     return service
   except (httplib2.ServerNotFoundError, RuntimeError) as e:
@@ -1098,7 +1100,8 @@ def getCRMService(login_hint):
           http=httpc,
           cache_discovery=False,
           static_discovery=False,
-          discoveryServiceUrl=V2_DISCOVERY_URI)
+          discoveryServiceUrl=V2_DISCOVERY_URI,
+          num_retries=10)
   return (crm, httpc)
 
 GYB_PROJECT_APIS = 'https://raw.githubusercontent.com/jay0lee/got-your-back/master/project-apis.txt?'
@@ -1117,7 +1120,8 @@ def enableProjectAPIs(project_name, checkEnabled, httpc):
           http=httpc,
           cache_discovery=False,
           static_discovery=False,
-          discoveryServiceUrl=V2_DISCOVERY_URI)
+          discoveryServiceUrl=V2_DISCOVERY_URI,
+          num_retries=10)
   if checkEnabled:
     enabledServices = callGAPIpages(serveu.services(), 'list', 'services',
                                     parent=parent, filter='state:ENABLED',
@@ -1385,7 +1389,8 @@ and accept the Terms of Service (ToS). As soon as you've accepted the ToS popup,
           http=httpc,
           cache_discovery=False,
           static_discovery=False,
-          discoveryServiceUrl=V2_DISCOVERY_URI)
+          discoveryServiceUrl=V2_DISCOVERY_URI,
+          num_retries=10)
   print('Creating Service Account')
   sa_body = {
              'accountId': project_id,
@@ -1878,10 +1883,10 @@ def backup_message(request_id, response, exception):
 
 def _createHttpObj(cache=None, timeout=600):
   http_args = {'cache': cache, 'timeout': timeout}
-  if 'tls_maximum_version' in options:
-    http_args['tls_maximum_version'] = options.tls_maximum_version
-  if 'tls_minimum_version' in options:
-    http_args['tls_minimum_version'] = options.tls_minimum_version
+  if 'tls_max_version' in options:
+    http_args['tls_maximum_version'] = options.tls_max_version
+  if 'tls_min_version' in options:
+    http_args['tls_minimum_version'] = options.tls_min_version
   httpc = httplib2.Http(**http_args)
   if os.environ.get('GOOGLE_API_CLIENT_CERTIFICATE') and \
      os.environ.get('GOOGLE_API_CLIENT_PRIVATE_KEY'):
