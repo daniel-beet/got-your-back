@@ -45,7 +45,6 @@ mbox_extensions = ['mbx', 'mbox', 'eml']
 
 import argparse
 from csv import DictReader
-import importlib
 from io import BytesIO
 import sys
 import os
@@ -55,7 +54,6 @@ import ipaddress
 import multiprocessing
 from urllib.parse import urlencode, urlparse, parse_qs
 import wsgiref.simple_server
-import wsgiref.util
 import time
 import calendar
 import random
@@ -73,7 +71,6 @@ from email.utils import (format_datetime,
 import hashlib
 import re
 import string
-from itertools import islice, chain
 import base64
 import json
 import xml.etree.ElementTree as etree
